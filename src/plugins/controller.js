@@ -13,14 +13,18 @@ import { defaultCatalogDir, defaultPython, scanAll } from './scan.js';
 import { readPluginState, writePluginParams, replaceSlot } from './state.js';
 import { getXmlAttrs } from './vstpreset.js';
 import { closePluginWindows } from './windows.js';
-import { classIdFor } from './classes.js';
+import { classIdFor, findPluginClass } from './classes.js';
 import { pluginParamNames } from '../plugins.js';
 import { listPresets, insertPreset, addPlugin, slotCommand } from '../tracks.js';
 
 const SCAN_HINT = 'run live_plugin_scan (it needs `npm run scan:setup` once)';
 
-// -> { backend: 'native' | 'state' | 'opaque', entry, names, reason }
-export function pickBackend(insertName, catalog, { discover = pluginParamNames } = {}) {
+// -> { backend: 'native' | 'state' | 'opaque', entry, names, reason }. PreSonus names are tried
+// first, so a catalog entry can never capture a PreSonus plug-in. `pluginClass(name)` is Studio One's
+// own class entry for the name; its file tells whether an unscanned plug-in is a VST3.
+export function pickBackend(insertName, catalog, { discover = pluginParamNames, pluginClass = findPluginClass } = {}) {
+  const { names } = discover(insertName);
+  if (names.length) return { backend: 'native', entry: null, names };
   const entry = catalog ? matchPlugin(catalog, insertName) : null;
   if (entry) {
     if (entry.scanError) return { backend: 'opaque', entry, reason: 'scanError' };
@@ -28,9 +32,10 @@ export function pickBackend(insertName, catalog, { discover = pluginParamNames }
     if (c.stateRoundTrip || c.xmlState) return { backend: 'state', entry };
     return { backend: 'opaque', entry, reason: c.hostParams ? 'noState' : 'noHostParams' };
   }
-  const { names } = discover(insertName);
-  if (names.length) return { backend: 'native', entry: null, names };
-  return { backend: 'opaque', entry: null, reason: 'unknown' };
+  // Not found in Studio One's list either (or no list): it may still be a VST3, so suggest the scan.
+  const cls = pluginClass(insertName);
+  if (cls && !/\.vst3$/i.test(cls.file || '')) return { backend: 'opaque', entry: null, reason: 'unsupported' };
+  return { backend: 'opaque', entry: null, reason: 'unscanned' };
 }
 
 export function backendFor(insertName, catalog, opts) {
@@ -43,7 +48,9 @@ export function opaqueMessage(name, { reason, entry } = {}) {
     const why = String(entry?.scanError || '').split(/\r?\n|\|/)[0].slice(0, 160);
     return `${name} could not be scanned (${why}); re-run live_plugin_scan to try again, or use live_plugin_presets to load a preset instead`;
   }
-  if (reason === 'unknown') return `${name} is not in the plug-in catalog: ${SCAN_HINT}, or use live_plugin_presets to load a preset instead`;
+  if (reason === 'unscanned') return `${name} is not in the plug-in catalog: ${SCAN_HINT}, or use live_plugin_presets to load a preset instead`;
+  if (reason === 'unsupported') return `${name} is not supported for parameter control (only VST3 plug-ins are scanned); use live_plugin_presets to load a preset instead`;
+  if (reason === 'noState') return `${name}'s parameters could not be mapped to its saved state; use live_plugin_presets to load a preset instead`;
   return `${name} does not expose its parameters to hosts; use live_plugin_presets to load a preset instead`;
 }
 
@@ -57,6 +64,7 @@ async function insertAt(call, channel, slot) {
 const defaults = (deps = {}) => ({
   catalog: deps.catalog ?? loadCatalog(defaultCatalogDir()),
   discover: deps.discover ?? pluginParamNames,
+  pluginClass: deps.pluginClass ?? findPluginClass,
   readState: deps.readState ?? readPluginState,
   writeParams: deps.writeParams ?? writePluginParams,
   ...deps,
@@ -83,7 +91,7 @@ export async function getParams(call, { channel, slot, filter, params }, deps) {
   const plug = await insertAt(call, channel, slot);
   // Explicit names go straight to Studio One (the native path), whatever the plug-in.
   if (params?.length) return { ...(await call('pluginParams', { channel, slot, names: params })), backend: 'native', realtime: true };
-  const b = pickBackend(plug.name, d.catalog, { discover: d.discover });
+  const b = pickBackend(plug.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
   const head = { channel, slot, plugin: plug.name, backend: b.backend };
   if (b.backend === 'native') {
     const want = b.names.filter((n) => matches(filter, n));
@@ -110,19 +118,40 @@ export async function getParams(call, { channel, slot, filter, params }, deps) {
   return out;
 }
 
-// A change value for the state backend. Text is the value in the plug-in's own units: "6 dB" -> 6,
-// "on"/"off" -> booleans; numbers on a boolean parameter -> booleans; { normalized } passes through.
-export function stateChange(v, param) {
+// A number given with a unit, in the parameter's unit: the unit must be the catalog label
+// (case-insensitive), or the label with a k prefix (x1000), or ms for a parameter in s.
+function inUnit(n, unit, param, key, text) {
+  const label = String(param?.label ?? '').trim();
+  const u = unit.toLowerCase();
+  const l = label.toLowerCase();
+  if (l && u === l) return n;
+  if (l && u === `k${l}`) return n * 1000;
+  if (l === 's' && u === 'ms') return n / 1000;
+  throw new Error(`${param?.name ?? key} is ${label ? `in ${label}` : 'unitless'}; "${text}" not understood`);
+}
+
+/**
+ * A change value for the state backend.
+ *  - binary state (pedalboard): strings pass unchanged, so the plug-in's own text conversion is used;
+ *  - XML state: text is on/off/true/false, or a number, optionally with the parameter's unit
+ *    ("6 dB"; "2 kHz" -> 2000 for a Hz parameter); numbers must lie within the catalog min..max.
+ * Numbers 0/1 on a boolean parameter become booleans; { normalized } passes through.
+ */
+export function stateChange(v, param, { binary = false, key } = {}) {
   const bool = param && (param.isBoolean || (param.min === false && param.max === true));
   if (typeof v === 'string') {
+    if (binary) return v;
     const t = v.trim();
     if (/^(true|on|yes)$/i.test(t)) return true;
     if (/^(false|off|no)$/i.test(t)) return false;
-    const m = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*[a-z%°]*$/i.exec(t);
-    if (m) v = Number(m[1]);
-    else return v;
+    const m = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*([a-z%°]*)$/i.exec(t);
+    if (!m) return v;
+    v = m[2] ? inUnit(Number(m[1]), m[2], param, key, t) : Number(m[1]);
   }
   if (bool && typeof v === 'number' && (v === 0 || v === 1)) return v === 1;
+  if (!binary && typeof v === 'number' && param && typeof param.min === 'number' && typeof param.max === 'number' && (v < param.min || v > param.max)) {
+    throw new Error(`${param.name ?? key} must be within ${param.min}..${param.max}${param.label ? ` ${param.label}` : ''}; got ${v}`);
+  }
   return v;
 }
 
@@ -146,7 +175,7 @@ export async function setParams(call, { channel, slot, changes }, deps) {
   const list = Object.entries(changes || {});
   if (!list.length) throw new Error('no changes given');
   const plug = await insertAt(call, channel, slot);
-  const b = pickBackend(plug.name, d.catalog, { discover: d.discover });
+  const b = pickBackend(plug.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
   if (b.backend === 'opaque') throw new Error(opaqueMessage(plug.name, b));
   if (b.backend === 'native') {
     const results = [];
@@ -157,7 +186,7 @@ export async function setParams(call, { channel, slot, changes }, deps) {
   const conv = {};
   for (const [k, v] of list) {
     const param = (b.entry.params || []).find((p) => p.key === k) || findParam(b.entry, k);
-    conv[k] = stateChange(v, param);
+    conv[k] = stateChange(v, param, { binary: !(b.entry.capabilities || {}).xmlState, key: k });
   }
   return d.writeParams(call, { channel, slot, changes: conv, entry: b.entry });
 }
@@ -190,7 +219,7 @@ export async function pluginPresets(call, { channel, slot, plugin, action = 'lis
   if (!presets.some((p) => p.name === preset)) throw new Error(`${name} has no preset named "${preset}" (action list shows them)`);
   const r = await d.replace(call, { channel, slot, cid, preset }, d.closeWindows ? { closeWindows: d.closeWindows } : undefined);
   return {
-    channel, slot, plugin: r.plugin ?? name, preset, slotName: r.slotName, bypassed: r.bypassed, realtime: false,
+    channel, slot, plugin: r.plugin ?? name, preset, slotName: r.slotName, bypassed: r.bypassed, backend: 'preset', realtime: false,
     ...(r.warning ? { warning: r.warning } : {}),
     note: 'The plug-in was replaced by a new instance with the preset; settings made in its window since the last change are gone.',
   };

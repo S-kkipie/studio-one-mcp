@@ -3,3 +3,4 @@ node_modules/
 *.tmp
 .claude/
 .venv-scan/
+__pycache__/

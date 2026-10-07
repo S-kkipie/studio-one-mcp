@@ -66,7 +66,12 @@ export async function trackTask(call, op, { closeWindows = closePluginWindows } 
     return await trackTaskOnce(call, op);
   } catch (e) {
     if (!TASK_BLOCKED.test(String(e.message))) throw e;
-    await closeWindows();
+    try {
+      await closeWindows();
+    } catch {
+      e.message += ' (a plug-in window may be open in Studio One and closing it failed: close it and try again)';
+      throw e;
+    }
     try {
       return await trackTaskOnce(call, op);
     } catch (e2) {

@@ -28,18 +28,26 @@ const BINARY = { name: 'Binary Synth', capabilities: { hostParams: true, stateRo
 const BROKEN = { name: 'AmpliTube 5', scanError: 'unsupported plug-in format|details', scanErrorKind: 'error' };
 const catalog = new Map([ARCH, MODO, GOJIRA, BINARY, BROKEN].map((e) => [e.name, e]));
 const discover = (name) => ({ names: name === 'Pro EQ' ? ['lffreq', 'lfgain', 'hfgain'] : [], sources: [] });
+const pluginClass = (name) => ({ 'New VST3 Synth': { file: 'ABC/New VST3 Synth.vst3' }, 'Old VST2 Synth': { file: 'DEF/Old VST2 Synth.dll' } })[name] ?? null;
 
 test('backendFor: native, state and opaque', () => {
-  assert.equal(backendFor('Pro EQ', catalog, { discover }), 'native');
-  assert.equal(backendFor('Archetype Petrucci X', catalog, { discover }), 'state');
-  assert.equal(backendFor('Archetype Petrucci X 2', catalog, { discover }), 'state');
-  assert.equal(backendFor('Binary Synth', catalog, { discover }), 'state');
-  assert.equal(backendFor('MODO BASS', catalog, { discover }), 'opaque');
-  assert.equal(backendFor('Archetype Gojira', catalog, { discover }), 'opaque');
-  assert.equal(backendFor('AmpliTube 5', catalog, { discover }), 'opaque');
-  assert.equal(backendFor('Some Unscanned Synth', catalog, { discover }), 'opaque');
-  assert.equal(pickBackend('AmpliTube 5', catalog, { discover }).reason, 'scanError');
-  assert.equal(pickBackend('Some Unscanned Synth', catalog, { discover }).reason, 'unknown');
+  assert.equal(backendFor('Pro EQ', catalog, { discover, pluginClass }), 'native');
+  assert.equal(backendFor('Archetype Petrucci X', catalog, { discover, pluginClass }), 'state');
+  assert.equal(backendFor('Archetype Petrucci X 2', catalog, { discover, pluginClass }), 'state');
+  assert.equal(backendFor('Binary Synth', catalog, { discover, pluginClass }), 'state');
+  assert.equal(backendFor('MODO BASS', catalog, { discover, pluginClass }), 'opaque');
+  assert.equal(backendFor('Archetype Gojira', catalog, { discover, pluginClass }), 'opaque');
+  assert.equal(backendFor('AmpliTube 5', catalog, { discover, pluginClass }), 'opaque');
+  assert.equal(backendFor('Some Unscanned Synth', catalog, { discover, pluginClass }), 'opaque');
+  assert.equal(pickBackend('AmpliTube 5', catalog, { discover, pluginClass }).reason, 'scanError');
+  assert.equal(pickBackend('Some Unscanned Synth', catalog, { discover, pluginClass }).reason, 'unscanned');
+  assert.equal(pickBackend('New VST3 Synth', catalog, { discover, pluginClass }).reason, 'unscanned');
+  assert.equal(pickBackend('Old VST2 Synth', catalog, { discover, pluginClass }).reason, 'unsupported');
+});
+
+test('backendFor: PreSonus names win over a catalog entry of the same name', () => {
+  const clash = new Map([['Pro EQ', { name: 'Pro EQ', capabilities: { hostParams: true, xmlState: true } }]]);
+  assert.equal(backendFor('Pro EQ', clash, { discover, pluginClass }), 'native');
 });
 
 // A fake bridge with one channel per plug-in name; logs calls.
@@ -58,12 +66,15 @@ function fakeBridge(racks, extra = {}) {
 
 test('setParams on an opaque plug-in explains what is possible', async () => {
   const { call, log } = fakeBridge({ Bass: ['MODO BASS'], Amp: ['AmpliTube 5'], Syn: ['Some Unscanned Synth'], Goj: ['Archetype Gojira'] });
-  await assert.rejects(setParams(call, { channel: 'Bass', slot: 0, changes: { Bypass: 1 } }, { catalog, discover }),
+  await assert.rejects(setParams(call, { channel: 'Bass', slot: 0, changes: { Bypass: 1 } }, { catalog, discover, pluginClass }),
     { message: 'MODO BASS does not expose its parameters to hosts; use live_plugin_presets to load a preset instead' });
-  await assert.rejects(setParams(call, { channel: 'Goj', slot: 0, changes: { x: 1 } }, { catalog, discover }),
-    { message: 'Archetype Gojira does not expose its parameters to hosts; use live_plugin_presets to load a preset instead' });
-  await assert.rejects(setParams(call, { channel: 'Amp', slot: 0, changes: { x: 1 } }, { catalog, discover }), /AmpliTube 5 could not be scanned \(unsupported plug-in format\); re-run live_plugin_scan.*live_plugin_presets/);
-  await assert.rejects(setParams(call, { channel: 'Syn', slot: 0, changes: { x: 1 } }, { catalog, discover }), /not in the plug-in catalog: run live_plugin_scan .*npm run scan:setup.*live_plugin_presets/);
+  await assert.rejects(setParams(call, { channel: 'Goj', slot: 0, changes: { x: 1 } }, { catalog, discover, pluginClass }),
+    { message: "Archetype Gojira's parameters could not be mapped to its saved state; use live_plugin_presets to load a preset instead" });
+  const old = fakeBridge({ V2: ['Old VST2 Synth'] });
+  await assert.rejects(setParams(old.call, { channel: 'V2', slot: 0, changes: { x: 1 } }, { catalog, discover, pluginClass }),
+    { message: 'Old VST2 Synth is not supported for parameter control (only VST3 plug-ins are scanned); use live_plugin_presets to load a preset instead' });
+  await assert.rejects(setParams(call, { channel: 'Amp', slot: 0, changes: { x: 1 } }, { catalog, discover, pluginClass }), /AmpliTube 5 could not be scanned \(unsupported plug-in format\); re-run live_plugin_scan.*live_plugin_presets/);
+  await assert.rejects(setParams(call, { channel: 'Syn', slot: 0, changes: { x: 1 } }, { catalog, discover, pluginClass }), /not in the plug-in catalog: run live_plugin_scan .*npm run scan:setup.*live_plugin_presets/);
   assert.ok(!log.some(([op]) => op === 'setPluginParam'));
   assert.match(opaqueMessage('X', { reason: 'noHostParams' }), /^X does not expose/);
 });
@@ -72,7 +83,7 @@ test('getParams on a state plug-in maps the XML attributes to parameter names', 
   const { call } = fakeBridge({ Gtr: ['Archetype Petrucci X 2'] });
   let read;
   const readState = async (_c, a) => { read = a; return { xml: '<appModel inputGain="-3.5" gateActive="false" other="1"/>', source: 'song-save', saved: true }; };
-  const r = await getParams(call, { channel: 'Gtr', slot: 0 }, { catalog, discover, readState });
+  const r = await getParams(call, { channel: 'Gtr', slot: 0 }, { catalog, discover, pluginClass, readState });
   assert.deepEqual(read, { channel: 'Gtr', slot: 0 });
   assert.equal(r.backend, 'state');
   assert.equal(r.realtime, false);
@@ -81,31 +92,31 @@ test('getParams on a state plug-in maps the XML attributes to parameter names', 
   assert.deepEqual(r.params.map((p) => [p.name, p.key, p.value]), [['Input Gain', 'input_gain', -3.5], ['Gate Active', 'gate_active', false]]);
   assert.equal(r.params[0].label, 'dB');
   assert.deepEqual(r.unmapped, ['No State']);
-  const f = await getParams(call, { channel: 'Gtr', slot: 0, filter: 'gate' }, { catalog, discover, readState });
+  const f = await getParams(call, { channel: 'Gtr', slot: 0, filter: 'gate' }, { catalog, discover, pluginClass, readState });
   assert.deepEqual(f.params.map((p) => p.key), ['gate_active']);
 });
 
 test('getParams: native keeps its output shape plus backend and realtime; opaque returns a note', async () => {
   const { call, log } = fakeBridge({ Voc: ['Pro EQ'], Bass: ['MODO BASS'] });
-  const r = await getParams(call, { channel: 'Voc', slot: 0, filter: 'gain' }, { catalog, discover });
+  const r = await getParams(call, { channel: 'Voc', slot: 0, filter: 'gain' }, { catalog, discover, pluginClass });
   assert.deepEqual(Object.keys(r).sort(), ['backend', 'channel', 'params', 'plugin', 'realtime', 'slot']);
   assert.equal(r.backend, 'native');
   assert.equal(r.realtime, true);
   assert.deepEqual(log.find(([op]) => op === 'pluginParams')[1].names, ['lfgain', 'hfgain']);
-  const o = await getParams(call, { channel: 'Bass', slot: 0 }, { catalog, discover });
+  const o = await getParams(call, { channel: 'Bass', slot: 0 }, { catalog, discover, pluginClass });
   assert.equal(o.backend, 'opaque');
   assert.deepEqual(o.params, []);
   assert.match(o.note, /live_plugin_presets/);
-  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover }), /no plug-in in slot 3 on Voc/);
+  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover, pluginClass }), /no plug-in in slot 3 on Voc/);
 });
 
 test('setParams native: one change keeps the bridge shape, a batch returns results', async () => {
   const { call, log } = fakeBridge({ Voc: ['Pro EQ'] });
-  const one = await setParams(call, { channel: 'Voc', slot: 0, changes: { lfgain: '-3 dB' } }, { catalog, discover });
+  const one = await setParams(call, { channel: 'Voc', slot: 0, changes: { lfgain: '-3 dB' } }, { catalog, discover, pluginClass });
   assert.equal(one.param, 'lfgain');
   assert.equal(one.backend, 'native');
   assert.equal(one.realtime, true);
-  const many = await setParams(call, { channel: 'Voc', slot: 0, changes: { lfgain: 2, hfgain: { normalized: 0.25 }, lffreq: true } }, { catalog, discover });
+  const many = await setParams(call, { channel: 'Voc', slot: 0, changes: { lfgain: 2, hfgain: { normalized: 0.25 }, lffreq: true } }, { catalog, discover, pluginClass });
   assert.equal(many.results.length, 3);
   const sets = log.filter(([op]) => op === 'setPluginParam').map(([, a]) => a);
   assert.deepEqual(sets.map(({ param, text, value, normalized }) => ({ param, text, value, normalized })), [
@@ -120,15 +131,44 @@ test('setParams state: values converted, one write with the catalog entry', asyn
   const { call } = fakeBridge({ Gtr: ['Archetype Petrucci X'] });
   let seen;
   const writeParams = async (_c, a) => { seen = a; return { applied: a.changes, missing: [], backend: 'state', realtime: false }; };
-  const r = await setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Input Gain': '6 dB', gate_active: 0 } }, { catalog, discover, writeParams });
+  const r = await setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Input Gain': '6 dB', gate_active: 0 } }, { catalog, discover, pluginClass, writeParams });
   assert.equal(seen.entry, ARCH);
   assert.deepEqual(seen.changes, { 'Input Gain': 6, gate_active: false });
   assert.equal(r.backend, 'state');
 });
 
-test('stateChange: units stripped, words to booleans, normalized kept', () => {
-  assert.equal(stateChange('-12.5 dB'), -12.5);
-  assert.equal(stateChange('50%'), 50);
+test('setParams state: a wrong unit or an out-of-range value fails before Studio One is touched', async () => {
+  const { call, log } = fakeBridge({ Gtr: ['Archetype Petrucci X'] });
+  const writeParams = async () => assert.fail('must not write');
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Input Gain': '2 kHz' } }, { catalog, discover, pluginClass, writeParams }),
+    { message: 'Input Gain is in dB; "2 kHz" not understood' });
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 30 } }, { catalog, discover, pluginClass, writeParams }),
+    { message: 'Input Gain must be within -24..24 dB; got 30' });
+  assert.deepEqual(log.map(([op]) => op), ['inserts', 'inserts']);
+});
+
+test('setParams state, binary flavour: text passes unchanged to the plug-in', async () => {
+  const { call } = fakeBridge({ Syn: ['Binary Synth'] });
+  let seen;
+  await setParams(call, { channel: 'Syn', slot: 0, changes: { cutoff: '2 kHz' } }, { catalog, discover, pluginClass, writeParams: async (_c, a) => { seen = a; return {}; } });
+  assert.deepEqual(seen.changes, { cutoff: '2 kHz' });
+});
+
+test('stateChange: units must match the catalog label, words to booleans, normalized kept', () => {
+  const hz = { name: 'Freq', label: 'Hz', min: 20, max: 20000 };
+  const pct = { name: 'Mix', label: '%', min: 0, max: 100 };
+  const unit = { name: 'Amount', label: '', min: 0, max: 1 };
+  const sec = { name: 'Release', label: 's', min: 0, max: 5 };
+  assert.equal(stateChange('-12.5 dB', { name: 'Gain', label: 'dB', min: -24, max: 24 }), -12.5);
+  assert.equal(stateChange('2 kHz', hz), 2000);
+  assert.equal(stateChange('440 hz', hz), 440);
+  assert.equal(stateChange('250 ms', sec), 0.25);
+  assert.equal(stateChange('50%', pct), 50);
+  assert.throws(() => stateChange('50%', unit), { message: 'Amount is unitless; "50%" not understood' });
+  assert.throws(() => stateChange('2 kHz', { name: 'Gain', label: 'dB', min: -24, max: 24 }), /Gain is in dB; "2 kHz" not understood/);
+  assert.throws(() => stateChange('30000 Hz', hz), /Freq must be within 20\.\.20000 Hz; got 30000/);
+  assert.throws(() => stateChange(-1, unit), /Amount must be within 0\.\.1; got -1/);
+  assert.equal(stateChange('2 kHz', hz, { binary: true }), '2 kHz');
   assert.equal(stateChange('Off'), false);
   assert.equal(stateChange('on'), true);
   assert.equal(stateChange('Clean Channel'), 'Clean Channel');
@@ -172,6 +212,7 @@ test('live_plugin_presets load goes through the shared replace-slot flow', async
   assert.deepEqual(seen, { channel: 'Voc', slot: 0, cid: '{C}', preset: 'Kick' });
   assert.equal(r.slotName, 'FX02');
   assert.equal(r.bypassed, true);
+  assert.equal(r.backend, 'preset');
   assert.equal(r.realtime, false);
   await assert.rejects(pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Nope' }, { classIdFor: () => '{C}', replace }), /no preset named "Nope"/);
   await assert.rejects(pluginPresets(call, { plugin: 'Pro EQ', action: 'load', preset: 'Kick' }, { classIdFor: () => '{C}', replace }), /load needs channel and slot/);
@@ -242,6 +283,14 @@ test('trackTask: when Track Edit is blocked, close plug-in windows once and retr
   await assert.rejects(trackTask(async () => { k++; return { results: [{ error: 'no channel named X' }] }; }, { op: 'x' }, { closeWindows: async () => { closedOther++; return []; } }), /no channel named X/);
   assert.equal(k, 1);
   assert.equal(closedOther, 0);
+
+  // Closing the windows fails: the original error comes back, with a hint, not the PowerShell one.
+  let j = 0;
+  await assert.rejects(
+    trackTask(async () => { j++; throw new Error('Studio One: Track/MCP Track Edit is not available right now'); }, { op: 'x' }, { closeWindows: async () => { throw new Error('closing plug-in windows failed: powershell broke'); } }),
+    (e) => /^Studio One: Track\/MCP Track Edit is not available right now \(a plug-in window may be open/.test(e.message) && !/powershell/.test(e.message),
+  );
+  assert.equal(j, 1);
 });
 
 test("Studio One's plug-in cache gives class IDs by name, VST3 before VST2", () => {

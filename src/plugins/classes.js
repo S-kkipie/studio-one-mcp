@@ -58,15 +58,20 @@ export function loadPluginClasses(files = pluginCacheFiles()) {
 // VST2 (.dll) copies share the name; Studio One shows the VST3 one when both are installed.
 const rank = (c) => (/\.dll$/i.test(c.file) ? 1 : 0);
 
-// The class ID ("{8-4-4-4-12}") of a plug-in by the name live_inserts shows ("Pro EQ",
-// "Archetype Petrucci X 2" for a second instance), or null.
-export function classIdFor(name, classes = loadPluginClasses()) {
+// Studio One's class entry ({ name, cid, category, file }) for a plug-in by the name live_inserts
+// shows ("Pro EQ", "Archetype Petrucci X 2" for a second instance), or null.
+export function findPluginClass(name, classes = loadPluginClasses()) {
   const want = String(name ?? '').trim();
   if (!want) return null;
   const pick = (q) => {
     const hits = classes.filter((c) => c.name === q);
     const ci = hits.length ? hits : classes.filter((c) => c.name.toLowerCase() === q.toLowerCase());
-    return ci.length ? [...ci].sort((a, b) => rank(a) - rank(b))[0].cid : null;
+    return ci.length ? [...ci].sort((a, b) => rank(a) - rank(b))[0] : null;
   };
   return pick(want) || (/\s+\d+$/.test(want) ? pick(want.replace(/\s+\d+$/, '')) : null);
+}
+
+// The class ID ("{8-4-4-4-12}") of a plug-in by name, or null.
+export function classIdFor(name, classes = loadPluginClasses()) {
+  return findPluginClass(name, classes)?.cid ?? null;
 }
