@@ -62,3 +62,17 @@ test('getCatalog with Studio One down and no cache: macro-only with a warning', 
   assert.equal(c.live, false);
   assert.match(c.warnings.join(' '), /not running/);
 });
+
+test('getCatalog: unwritable cache location yields a warning, not a rejection', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's1cat-'));
+  const blocker = path.join(dir, 'file');
+  fs.writeFileSync(blocker, 'x');
+  const c = await getCatalog(fakeCall(true), { file: path.join(blocker, 'commands', 'catalog.json'), install: null, macroDirs: [] });
+  assert.equal(c.commands.length, 3);
+  assert.match(c.warnings.join(' '), /catalog cache not saved/);
+});
+
+test('mergeCatalog skips live entries without category or name', () => {
+  const c = mergeCatalog({ live: [{ category: '', name: 'X' }, { category: 'A', name: 'B', arguments: '' }], schemas: {}, examples: {}, install: null, warnings: [] });
+  assert.deepEqual(c.commands.map((e) => e.command), ['A/B']);
+});

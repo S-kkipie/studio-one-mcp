@@ -35,7 +35,7 @@ function liveEntry(l, schemas) {
 
 export function mergeCatalog({ live, schemas, examples, install, warnings, now = Date.now() }) {
   const byCommand = new Map();
-  if (live) for (const l of live) { const e = liveEntry(l, schemas ?? {}); byCommand.set(e.command, e); }
+  if (live) for (const l of live) { if (!l || !l.category || !l.name) continue; const e = liveEntry(l, schemas ?? {}); byCommand.set(e.command, e); }
   const ex = examples ?? {};
   for (const [command, list] of Object.entries(ex)) {
     let e = byCommand.get(command);
@@ -77,7 +77,7 @@ function readCache(file) {
 
 function saveCatalog(file, catalog) {
   fs.mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
+  const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(catalog, null, 1));
   fs.renameSync(tmp, file);
 }
@@ -101,13 +101,13 @@ export async function getCatalog(call, { refresh = false, now = Date.now(), file
 
   const warnings = [];
   let schemas = {};
-  if (install) {
+  if (live && install) {
     const r = extractEditTaskSchemas(install);
     schemas = r.schemas ?? {};
     warnings.push(...(r.warnings ?? []));
   }
   if (!live) warnings.push(OFFLINE_WARNING);
   const catalog = mergeCatalog({ live, schemas, examples: readMacroExamples(dirs), install, warnings, now });
-  saveCatalog(file, catalog);
+  try { saveCatalog(file, catalog); } catch (e) { catalog.warnings.push(`catalog cache not saved: ${e.message}`); }
   return catalog;
 }
