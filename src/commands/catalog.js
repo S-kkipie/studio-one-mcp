@@ -8,6 +8,7 @@ import { readMacroExamples, macroDirs as defaultMacroDirs } from './macros.js';
 
 export const CATALOG_SCHEMA = 1;
 const MAX_AGE_MS = 24 * 3600e3;
+const RETRY_OUTDATED_MS = 10 * 60e3;
 const MAX_VALUE_EXAMPLES = 5;
 const OUTDATED_WARNING = 'bridge device is outdated: run `studio-one-mcp setup` (or scripts/install-device.js) and restart Studio One for argument schemas';
 const REFRESH_FAILED_WARNING = 'refresh failed: Studio One did not answer; showing the cached catalog';
@@ -103,6 +104,7 @@ function saveCatalog(file, catalog) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(catalog, null, 1));
   fs.renameSync(tmp, file);
+  memo.delete(file); // a rewrite can keep the same mtime and size on coarse filesystems
 }
 
 async function fetchLive(call) {
@@ -127,7 +129,10 @@ export function getCatalog(call, opts = {}) {
 async function buildCatalog(call, { refresh = false, now = Date.now(), file, install = pickInstall(studioOneApps()), macroDirs: dirs = defaultMacroDirs() } = {}) {
   const cache = readCache(file);
   const builtMs = cache ? Date.parse(cache.builtAt) : NaN;
-  const needsRebuild = !cache || refresh || cache.live === false || cache.detail === false || !(now - builtMs <= MAX_AGE_MS);
+  // An outdated bridge device answers every time with no argument data: retry it
+  // at most every 10 minutes instead of on every call.
+  const outdatedRetry = cache?.detail === false && !(now - builtMs <= RETRY_OUTDATED_MS);
+  const needsRebuild = !cache || refresh || cache.live === false || outdatedRetry || !(now - builtMs <= MAX_AGE_MS);
   if (!needsRebuild) return cache;
 
   const live = await fetchLive(call);

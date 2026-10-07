@@ -90,8 +90,11 @@ test('outdated bridge device: detail false, warning, argsKnown false; rebuilt wh
   assert.equal(mergeCatalog({ live: LIVE, schemas: {}, examples: {}, install: null, warnings: [] }).detail, true);
   const file = tmpFile();
   await getCatalog(oldCall, { file, install: null, macroDirs: [] });
+  const soon = [];
+  await getCatalog(fakeCall(true, soon), { file, install: null, macroDirs: [], now: Date.now() + 60e3 });
+  assert.deepEqual(soon, [], 'not retried within 10 minutes');
   const calls = [];
-  const c2 = await getCatalog(fakeCall(true, calls), { file, install: null, macroDirs: [] });
+  const c2 = await getCatalog(fakeCall(true, calls), { file, install: null, macroDirs: [], now: Date.now() + 11 * 60e3 });
   assert.ok(calls.includes('listCommands'), 'detail:false cache is rebuilt');
   assert.equal(c2.detail, true);
 });
