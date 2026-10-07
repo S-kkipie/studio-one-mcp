@@ -210,7 +210,7 @@ class Bridge {
         if (!Host.Settings || !has(Host.Settings, "getAttributes", "function")) return null;
         const renderer = Host.Settings.getAttributes(base);
         const codec = Host.Settings.getAttributes(base + ".AudioCodec");
-        const ok = (a) => a && has(a, "getAttribute", "function") && has(a, "setAttribute", "function") && has(a, "countAttributes", "function");
+        const ok = (a) => a && has(a, "getAttribute", "function") && has(a, "setAttribute", "function") && has(a, "countAttributes", "function") && has(a, "getAttributeName", "function") && has(a, "getAttributeValue", "function");
         return ok(renderer) && ok(codec) && codec.getAttribute("fileType") ? { renderer, codec } : null;
     }
 
@@ -264,7 +264,9 @@ class Bridge {
             }
             for (const e in snap.selected) {
                 const ent = s.codec.getAttribute(e);
-                if (ent && has(ent, "setAttribute", "function") && snap.selected[e] !== undefined) ent.setAttribute("selected", snap.selected[e]);
+                if (!ent || !has(ent, "setAttribute", "function")) continue;
+                if (snap.selected[e] !== undefined) ent.setAttribute("selected", snap.selected[e]);
+                else if (has(ent, "removeAttribute", "function")) ent.removeAttribute("selected");
             }
             delete this.exportSnapshots[kind];
             return { restored: true, settings: this.exportState(kind, s) };
@@ -278,8 +280,14 @@ class Bridge {
             if (!formats.length) return fail("formats is empty");
             if (kind === "stems" && formats.length !== 1) return fail("stems take exactly one format");
             for (const f of formats) if (f !== current && entries.indexOf(f) < 0) return fail("format " + f + " is not available");
+            if (formats[0] !== current && !has(Host, "Attributes", "function")) return fail("cannot create a settings entry (Host.Attributes is missing)");
         }
-        if (args.range !== undefined && [0, 1, 2].indexOf(Number(args.range)) < 0) return fail("range must be 0, 1 or 2");
+        if (args.range !== undefined && (typeof args.range !== "number" || [0, 1, 2].indexOf(args.range) < 0)) return fail("range must be 0, 1 or 2");
+        const allowed = kind === "mixdown"
+            ? ["importToTrack", "preMasterFX", "writeAudioTempo"]
+            : ["importToTrack", "preMasterFX", "writeAudioTempo", "realtime", "splitMono", "keepSpeakerFormat"];
+        const o = args.options && typeof args.options === "object" ? args.options : {};
+        for (const n in o) if (Object.prototype.hasOwnProperty.call(o, n) && allowed.indexOf(n) < 0) return fail("unknown option " + n + " for " + kind);
         // Snapshot (references) so restore puts the user's settings back exactly.
         const snapOf = (sec) => { const out = []; for (let i = 0; i < sec.countAttributes(); i++) out.push([String(sec.getAttributeName(i)), sec.getAttributeValue(i)]); return out; };
         if (!this.exportSnapshots[kind]) {
@@ -289,7 +297,6 @@ class Bridge {
             this.exportSnapshots[kind] = { renderer: snapOf(s.renderer), codec: snapOf(s.codec), selected: sel };
         }
         if (args.range !== undefined) s.renderer.setAttribute("renderRange", Number(args.range));
-        const o = args.options || {};
         for (const n in o) if (Object.prototype.hasOwnProperty.call(o, n) && o[n] !== undefined && o[n] !== null) s.renderer.setAttribute(n, o[n] ? 1 : 0);
         s.renderer.setAttribute("closeAfterExport", 1);
         if (formats) {
@@ -307,6 +314,7 @@ class Bridge {
                 s.codec.setAttribute("format", entry.getAttribute("format"));
                 const eAttrs = entry.getAttribute("attributes");
                 if (eAttrs) s.codec.setAttribute("attributes", eAttrs);
+                else if (has(s.codec, "removeAttribute", "function")) s.codec.removeAttribute("attributes");
             }
             if (kind === "mixdown") {
                 for (const e of this.exportEntries(s.codec)) {

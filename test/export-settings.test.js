@@ -118,3 +118,45 @@ test('empty settings fail cleanly instead of throwing', () => {
   const r = exp({ kind: 'mixdown', action: 'get' });
   assert.equal(r.ok, false);
 });
+
+test('target entry without attributes drops the old top-level attributes', () => {
+  const { exp, settings } = setup();
+  const codec = settings['SongRenderer.AudioCodec'];
+  assert.ok(codec.getAttribute('attributes'));
+  result(exp({ kind: 'mixdown', action: 'apply', formats: ['wav'] }));
+  assert.equal(codec.getAttribute('attributes'), undefined);
+  assert.ok(codec.getAttribute('mp3').getAttribute('attributes'));
+  result(exp({ kind: 'mixdown', action: 'restore' }));
+  assert.ok(codec.getAttribute('attributes'));
+});
+
+test('missing Host.Attributes fails before mutating', () => {
+  const { host, exp, settings } = setup();
+  const first = result(exp({ kind: 'mixdown', action: 'get' }));
+  delete host.Host.Attributes;
+  const r = exp({ kind: 'mixdown', action: 'apply', formats: ['wav'], range: 2, options: { importToTrack: true } });
+  assert.equal(r.ok, false);
+  assert.deepEqual(result(exp({ kind: 'mixdown', action: 'get' })), first);
+  assert.equal(settings.SongRenderer.getAttribute('renderRange'), 0);
+});
+
+test('unknown option key and bad range fail before mutating', () => {
+  const { exp, settings } = setup();
+  const first = result(exp({ kind: 'mixdown', action: 'get' }));
+  assert.equal(exp({ kind: 'mixdown', action: 'apply', range: 1, options: { bogus: true } }).ok, false);
+  assert.equal(exp({ kind: 'mixdown', action: 'apply', options: { realtime: true } }).ok, false);
+  assert.equal(exp({ kind: 'mixdown', action: 'apply', range: null }).ok, false);
+  assert.equal(exp({ kind: 'mixdown', action: 'apply', range: '1' }).ok, false);
+  assert.deepEqual(result(exp({ kind: 'mixdown', action: 'get' })), first);
+  assert.equal(settings.SongRenderer.getAttribute('closeAfterExport'), 1);
+});
+
+test('restore removes selected flags that were absent', () => {
+  const { exp, settings } = setup();
+  const codec = settings['SongRenderer.AudioCodec'];
+  codec.getAttribute('flac').removeAttribute('selected');
+  result(exp({ kind: 'mixdown', action: 'apply', formats: ['wav'] }));
+  assert.equal(codec.getAttribute('flac').getAttribute('selected'), 0);
+  result(exp({ kind: 'mixdown', action: 'restore' }));
+  assert.equal(codec.getAttribute('flac').getAttribute('selected'), undefined);
+});
