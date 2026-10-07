@@ -29,14 +29,20 @@ function scoreEntry(entry, rawQuery, foldedQuery, tokens) {
   const catW = [...words(entry.category), ...words(entry.displayCategory)];
   const argW = (entry.args ?? []).flatMap((a) => [...words(a.name), ...(a.choices ?? []).flatMap((c) => words(c.label))]);
   let score = 0;
+  const hitBy = (t, fw) => wordMatches(fw, t) || synonyms(t).some((a) => wordMatches(fw, a, false));
   for (const t of tokens) {
-    const syn = synonyms(t);
-    const hit = (fw) => wordMatches(fw, t) || syn.some((a) => wordMatches(fw, a, false));
-    if (hit(nameW)) score += 3;
-    if (hit(dispW)) score += 3;
-    if (hit(catW)) score += 1;
-    if (hit(argW)) score += 1;
+    if (hitBy(t, nameW)) score += 3;
+    if (hitBy(t, dispW)) score += 3;
+    if (hitBy(t, catW)) score += 1;
+    if (hitBy(t, argW)) score += 1;
   }
+  // The query names the whole command ("transponer" → Transponer, not
+  // "Transponer pistas de instrumentos"): every content word of the field is matched.
+  const covered = (fw) => {
+    const content = fw.filter((w) => !STOPWORDS.has(w));
+    return content.length > 0 && content.every((w) => tokens.some((t) => hitBy(t, [w])));
+  };
+  if (covered(nameW) || covered(dispW)) score += 4;
   if (foldedQuery.length >= 4 && (fold(entry.name).includes(foldedQuery) || fold(entry.displayName).includes(foldedQuery))) score += 5;
   return score;
 }

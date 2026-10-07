@@ -84,7 +84,7 @@ function saveCatalog(file, catalog) {
 
 async function fetchLive(call) {
   try {
-    await call('status', {}, { timeoutMs: 1500 });
+    await call('ping', {}, { timeoutMs: 2500 });
     const live = await call('listCommands', { detail: true }, { timeoutMs: 15000 });
     return Array.isArray(live) ? live : null;
   } catch { return null; }

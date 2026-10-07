@@ -33,7 +33,7 @@ test('mergeCatalog without live data lists only macro commands', () => {
 });
 
 function tmpFile() { return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 's1cat-')), 'commands', 'catalog.json'); }
-const fakeCall = (live, calls = []) => async (op, args) => { calls.push(op); if (!live) throw new Error('Studio One is not answering'); return op === 'status' ? { ok: true } : LIVE; };
+const fakeCall = (live, calls = []) => async (op, args) => { calls.push(op); if (!live) throw new Error('Studio One is not answering'); return op === 'ping' ? { pong: true } : LIVE; };
 
 test('getCatalog builds from Studio One, caches, and reuses the cache', async () => {
   const file = tmpFile();
@@ -54,7 +54,7 @@ test('getCatalog: stale cache rebuilds only when Studio One answers', async () =
   const calls = [];
   const offline = await getCatalog(fakeCall(false, calls), { file, install: null, macroDirs: [], now: later });
   assert.equal(offline.commands.length, 3, 'old cache still served');
-  assert.deepEqual(calls, ['status'], 'one quick probe only');
+  assert.deepEqual(calls, ['ping'], 'one quick probe only');
 });
 
 test('getCatalog with Studio One down and no cache: macro-only with a warning', async () => {

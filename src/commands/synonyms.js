@@ -5,7 +5,7 @@ export const SYNONYM_GROUPS = [
   ['transpose', 'transponer', 'transposicion', 'transportar', 'tono', 'semitono', 'octava', 'octave'],
   ['quantize', 'cuantizar', 'cuantizacion', 'cuantiza', 'quantise'],
   ['track', 'pista', 'pistas', 'tracks'],
-  ['duplicate', 'duplicar', 'copiar', 'clonar'],
+  ['duplicate', 'duplicar', 'clonar'],
   ['delete', 'borrar', 'eliminar', 'remove', 'quitar'],
   ['velocity', 'velocidad', 'dinamica'],
   ['length', 'duracion', 'largo', 'longitud'],

@@ -49,3 +49,11 @@ test('synonyms match whole words only, not prefixes', () => {
   assert.deepEqual(searchCommands(c, 'region'), []);
   assert.equal(searchCommands(c, 'clip').length, 1);
 });
+
+test('a query that names the whole command outranks longer commands containing it', () => {
+  const c = { commands: [
+    { command: 'Track/Transpose Instrument Tracks', category: 'Track', name: 'Transpose Instrument Tracks', displayCategory: 'Pista', displayName: 'Transponer pistas de instrumentos', args: [{ name: 'Transpose', type: 'int', min: -64, max: 64 }] },
+    { command: 'Musical Functions/Transpose', category: 'Musical Functions', name: 'Transpose', displayCategory: 'Funciones musicales', displayName: 'Transponer', args: [] },
+  ] };
+  assert.equal(searchCommands(c, 'transponer')[0].command, 'Musical Functions/Transpose');
+});
