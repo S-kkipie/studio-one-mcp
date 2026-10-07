@@ -52,3 +52,11 @@ test('byte-exact layout', () => {
   assert.equal(b.readInt32LE(off + 4), 3);
   assert.equal(Number(b.readBigInt64LE(off + 12)), 48);
 });
+
+test('setXmlAttrs escapes and getXmlAttrs unescapes', () => {
+  const val = 'a"b&c<d';
+  const { xml } = setXmlAttrs('<a x="1"/>', { x: val });
+  assert.equal(xml, '<a x="a&quot;b&amp;c&lt;d"/>');
+  assert.equal(getXmlAttrs(xml, ['x']).x, val);
+  assert.equal(setXmlAttrs(xml, { x: getXmlAttrs(xml, ['x']).x }).xml, xml);
+});

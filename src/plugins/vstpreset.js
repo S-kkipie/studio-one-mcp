@@ -65,12 +65,15 @@ export function writeJuceXml(xml) {
 
 const esc = (k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const escAttr = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+const unescAttr = (v) => v.replace(/&(quot|lt|gt|apos|amp);/g, (_m, n) => ({ quot: '"', lt: '<', gt: '>', apos: "'", amp: '&' })[n]);
+
 export function setXmlAttrs(xml, attrs) {
   const missing = [];
   let out = xml;
   for (const [k, v] of Object.entries(attrs)) {
     const re = new RegExp(`(\\s${esc(k)}=")[^"]*(")`);
-    if (re.test(out)) out = out.replace(re, (_m, a, b) => a + String(v) + b);
+    if (re.test(out)) out = out.replace(re, (_m, a, b) => a + escAttr(v) + b);
     else missing.push(k);
   }
   return { xml: out, missing };
@@ -80,7 +83,7 @@ export function getXmlAttrs(xml, keys) {
   const res = {};
   for (const k of keys) {
     const m = new RegExp(`\\s${esc(k)}="([^"]*)"`).exec(xml);
-    res[k] = m ? m[1] : null;
+    res[k] = m ? unescAttr(m[1]) : null;
   }
   return res;
 }
