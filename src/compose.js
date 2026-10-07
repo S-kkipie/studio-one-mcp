@@ -32,22 +32,27 @@ async function restoreSelection(call, names) {
   for (const [i, name] of names.entries()) await call('selectTrack', { name, exclusive: i === 0 }).catch(() => {});
 }
 
-// Insert Instrument Part ignores the playhead and the loop range on Studio One 7.2.3:
-// it drops a one-bar part at a fixed spot. So insert, find the part that appeared,
-// then move it to the bar and resize it to the length.
+// Insert Instrument Part drops a one-bar part at the playhead (when it does not,
+// the part is moved). So: playhead to the bar, insert, find the part that appeared,
+// resize it to the length (and move it if it landed elsewhere), restore playhead
+// and selection.
+const NEAR = 0.01;
+
 export async function createPart(call, { track, bar, bars = 1 }) {
   checkBar(bar);
   if (!Number.isInteger(bars) || bars < 1) throw new Error('bars must be an integer >= 1');
   const [start, end] = await barSeconds(call, [bar, bar + bars]);
-  const { selectedTracks } = await call('song');
+  const { transport, selectedTracks } = await call('song');
   const key = (e) => `${e.start}|${e.end}`;
   const listEvents = async () => (await trackTask(call, { op: 'events', track })).events;
   const before = await listEvents();
   let r;
   try {
+    await call('setTransport', { positionSeconds: start });
     await call('selectTrack', { name: track });
     r = await call('command', { category: 'Instrument Parts', name: 'Insert Instrument Part' });
   } finally {
+    await call('setTransport', { positionSeconds: transport.position.seconds }).catch(() => {});
     await restoreSelection(call, selectedTracks);
   }
   if (!r || !r.executed) throw new Error(`could not insert an instrument part on ${track} (is it an instrument track?)`);
@@ -55,9 +60,16 @@ export async function createPart(call, { track, bar, bars = 1 }) {
   const seen = new Map();
   for (const e of before) seen.set(key(e), (seen.get(key(e)) || 0) + 1);
   const fresh = after.filter((e) => { const n = seen.get(key(e)) || 0; if (n) seen.set(key(e), n - 1); return !n; });
-  if (fresh.length !== 1) throw new Error(`Studio One did not add exactly one part to ${track}`);
-  const moved = await trackTask(call, { op: 'editEvent', track, event: fresh[0].number, to: start, end });
-  if (!(moved.done || []).includes('resize')) throw new Error('Studio One did not resize the new part (reinstall the device and restart Studio One, then retry); a stray part may be left at the default spot');
+  if (!fresh.length) throw new Error(`Studio One did not add a part to ${track}`);
+  const part = fresh.find((e) => Math.abs(e.start - start) <= NEAR) || fresh[0];
+  const atStart = Math.abs(part.start - start) <= NEAR;
+  if (fresh.length > 1 && !atStart) throw new Error(`Studio One added ${fresh.length} parts to ${track}; cannot tell which is new`);
+  if (!atStart || Math.abs(part.end - end) > NEAR) {
+    const op = { op: 'editEvent', track, event: part.number, end };
+    if (!atStart) op.to = start;
+    const edited = await trackTask(call, op);
+    if (!(edited.done || []).includes('resize')) throw new Error('Studio One did not resize the new part (reinstall the device and restart Studio One, then retry)');
+  }
   return { track, part: { start, end } };
 }
 
