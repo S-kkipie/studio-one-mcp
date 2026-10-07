@@ -345,10 +345,12 @@ test('rhythmize: sustain, quarters, eighths, arpeggios', () => {
 
 test('drumGrid: GM lanes, accents, spaces and bars repeat', () => {
   const n = drumGrid({ kick: 'x... x...', snare: '..X.' }, { bars: 2 });
-  // kick: 2 hits per bar ("x... x..." = 8 steps, repeats); snare "..X." repeats 4× per bar, accented.
-  assert.equal(n.filter((x) => x.pitch === 36).length, 4);
+  // kick "x... x..." = 8 steps (2 beats) cycling: a hit every beat → 8 over 2 bars;
+  // snare "..X." = 4 steps (1 beat) cycling: 4 per bar → 8, all accented.
+  assert.equal(n.filter((x) => x.pitch === 36).length, 8);
   assert.equal(n.filter((x) => x.pitch === 38).length, 8);
-  assert.deepEqual(rows(n.filter((x) => x.pitch === 36)), [[36, 0, 0.25, 100], [36, 1, 0.25, 100], [36, 4, 0.25, 100], [36, 5, 0.25, 100]]);
+  assert.deepEqual(rows(n.filter((x) => x.pitch === 36)).map((r) => r[1]), [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(rows(n.filter((x) => x.pitch === 36))[0], [36, 0, 0.25, 100]);
   assert.ok(n.filter((x) => x.pitch === 38).every((x) => x.velocity === 120));
   assert.equal(n[n.length - 1].beat < 8, true);
 });
