@@ -94,6 +94,7 @@ remains available only to users who opt in.
 - Tools return MCP tool errors (not crashes) with an actionable message: unknown
   track, no song open, bad chord symbol, Studio One not answering (existing
   messages kept).
+- Checked live (7.2.3): when the insert lands inside an existing long part (insert spot 5.228 s, part 0-20.2 s), Studio One does not trim or change that part; the new part is a separate event and is then moved. No pre-insert guard is needed.
 - `live_create_part` restores the selection even when inserting fails; if a step after the insert fails, the error says where the stray part was left (there is no clean single-event delete; `live_undo` removes it).
 - `addNotes` reports per-note errors (pitch out of 0–127, non-positive length)
   and applies the valid ones.
