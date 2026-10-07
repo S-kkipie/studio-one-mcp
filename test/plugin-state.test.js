@@ -38,7 +38,8 @@ const ENTRY = {
 };
 
 // A fake Studio One: one channel "Gtr" with an insert rack; every bridge call is logged.
-function fakeStudio({ bypassed = false, failInsert = false, indexAfter = 1, failRemove = false } = {}) {
+// remove: { FX01: 'error' | 'noop' } makes removing that slot fail with an error, or do nothing (done: false).
+function fakeStudio({ bypassed = false, failInsert = false, indexAfter = 1, remove = {} } = {}) {
   const log = [];
   const rack = [{ name: 'Archetype Petrucci X', fx: 'FX01', bypassed }];
   let fxCount = 1;
@@ -75,9 +76,10 @@ function fakeStudio({ bypassed = false, failInsert = false, indexAfter = 1, fail
           return { results: [{ channel: 'Gtr', slot: `FX0${fxCount}` }] };
         }
         if (o.op === 'slotCommand') {
-          if (failRemove) return { results: [{ error: 'Remove is not available' }] };
+          if (remove[o.name] === 'error') return { results: [{ error: 'Remove is not available' }] };
+          if (remove[o.name] === 'noop') return { results: [{ done: false }] };
           const i = rack.findIndex((s) => s.fx === o.name);
-          assert.equal(i, o.slot, 'the old slot is addressed at its index after the insert');
+          assert.equal(i, o.slot, 'a slot is addressed by its name at its current index');
           rack.splice(i, 1);
           return { results: [{ done: true }] };
         }
@@ -92,7 +94,7 @@ function fakeStudio({ bypassed = false, failInsert = false, indexAfter = 1, fail
 const opts = (st, extra = {}) => ({
   presetsRoot: st.presetsRoot,
   readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', ...parseState(preset()), source: 'song-save' }),
-  closeWindows: async () => (st.log.push(['closeWindows']), []),
+  closeWindows: async (o) => (st.log.push(['closeWindows', o && o.channel ? `closeWindows:${o.channel}` : 'closeWindows']), []),
   sleep: async () => {},
   pollMs: 0,
   uuid: () => 'u-1',
@@ -146,10 +148,74 @@ test('writePluginParams: the temp file is deleted when the insert throws, and th
   assert.ok(!ops(st).includes('slotCommand'), 'nothing removed');
 });
 
-test('writePluginParams: a failed remove after a good insert says both instances are there', async () => {
-  const st = fakeStudio({ failRemove: true });
-  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)), /new instance is in slot 0.*old one.*slot 1.*Remove is not available/);
+test('writePluginParams: a failed remove of the old instance rolls back (new one removed), keeps the original', async () => {
+  const st = fakeStudio({ remove: { FX01: 'error' }, bypassed: true });
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)),
+    /change was not applied: removing the old instance \(FX01\) failed \(Remove is not available\); the new instance was removed again and the original is unchanged in slot 0/);
+  assert.deepEqual(st.rack.map((s) => [s.fx, s.bypassed]), [['FX01', true]]);
   assert.deepEqual(leftovers(st.presetsRoot), []);
+  assert.equal(ops(st).at(-1), 'Presets/Re-Index Presets');
+});
+
+test('writePluginParams: a remove that reports done:false is a failure, not a success', async () => {
+  const st = fakeStudio({ remove: { FX01: 'noop' } });
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)), /Studio One did not remove it.*original is unchanged/);
+  assert.deepEqual(st.rack.map((s) => s.fx), ['FX01']);
+});
+
+test('writePluginParams: a remove that "succeeds" but leaves the rack one longer is a failure too', async () => {
+  const st = fakeStudio();
+  const call = async (op, args) => {
+    if (op === 'trackTask' && args.ops[0].op === 'slotCommand' && args.ops[0].name === 'FX01') { st.log.push(['trackTask', 'slotCommand']); return { results: [{ done: true }] }; }
+    return st.call(op, args);
+  };
+  await assert.rejects(writePluginParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)), /rack has 2 plug-ins afterwards, expected 1.*original is unchanged/);
+  assert.deepEqual(st.rack.map((s) => s.fx), ['FX01']);
+});
+
+test('writePluginParams: when the rollback fails too, the new instance is bypassed and the error says so', async () => {
+  const st = fakeStudio({ remove: { FX01: 'error', FX02: 'error' } });
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)),
+    /not applied.*removing the new instance \(FX02\) failed too.*new instance in slot 0 was bypassed/);
+  assert.deepEqual(st.rack.map((s) => [s.fx, s.bypassed]), [['FX02', true], ['FX01', false]]);
+  assert.deepEqual(leftovers(st.presetsRoot), []);
+});
+
+test('writePluginParams: windows of the channel are closed before the read; the result warns about GUI edits', async () => {
+  const st = fakeStudio();
+  const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st));
+  assert.equal(ops(st)[0], 'closeWindows:Gtr');
+  assert.match(r.note, /changes made in its window during the few seconds of the write are lost/);
+});
+
+test('writePluginParams: a slot holding another plug-in is refused before editing', async () => {
+  const st = fakeStudio();
+  const o = opts(st, { readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Pro EQ', ...parseState(preset()), source: 'song-save' }) });
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, o), /holds Pro EQ, not Archetype Petrucci X; nothing changed/);
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: { ...ENTRY, classId: '073C4094E0624FB5832874608DD1A3A4' } }, opts(st)), /nothing changed/);
+  assert.ok(!ops(st).includes('insertPreset'));
+});
+
+test('writePluginParams: booleans are true/false where the state spells them so, else 1/0 (APVTS)', async () => {
+  const st = fakeStudio();
+  const xml = '<S gateActive="true"><PARAM id="bypass" value="0"/><PARAM id="mono" value="1"/></S>';
+  const entry = {
+    ...ENTRY,
+    params: [...ENTRY.params, { key: 'bypass', name: 'Bypass' }, { key: 'mono', name: 'Mono' }],
+    stateKeys: { gate_active: 'gateActive', bypass: 'PARAM[id=bypass]@value', mono: 'PARAM[id=mono]@value' },
+  };
+  const o = opts(st, { readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', ...parseState(preset(xml)), source: 'song-save' }) });
+  const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { gate_active: false, bypass: true, mono: false }, entry }, o);
+  assert.deepEqual(r.applied, { gate_active: false, bypass: true, mono: false });
+  assert.equal(readJuceXml(parseVstPreset(st.written()).chunks[0].data), '<S gateActive="false"><PARAM id="bypass" value="1"/><PARAM id="mono" value="0"/></S>');
+});
+
+test('writePluginParams: the trailing re-index also runs after a poll timeout', async () => {
+  const st = fakeStudio({ indexAfter: Infinity });
+  let now = 0;
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st, { now: () => now, sleep: async (ms) => { now += ms; }, pollMs: 1000 })), /did not list/);
+  assert.equal(ops(st).filter((x) => x === 'Presets/Re-Index Presets').length, 2);
+  assert.equal(ops(st).at(-1), 'Presets/Re-Index Presets');
 });
 
 test('writePluginParams: unknown keys land in missing; parameter names resolve to keys; nothing applicable = no replace', async () => {
@@ -243,7 +309,7 @@ test('readPluginState: saves the song and reads the slot preset the mixer names'
   const f = songFile({ 'Devices/audiomixer.xml': MIXER, 'Presets/Channels/Gtr/2 - Archetype Petrucci X.vstpreset': preset() });
   const log = [];
   const s = await readPluginState(readCall(f, log), { channel: 'Gtr', slot: 0 });
-  assert.deepEqual(log, ['inserts', 'save', 'song']);
+  assert.deepEqual(log, ['inserts', 'song', 'save']);
   assert.equal(s.source, 'song-save');
   assert.equal(s.classId, CLASS_ID);
   assert.equal(s.cid, CID);
@@ -259,6 +325,20 @@ test('findSlotPreset: falls back to the "<slot+1> - " prefix; clear error when a
   const g = songFile({ 'Presets/Channels/Other/1 - X.vstpreset': preset() });
   await assert.rejects(readPluginState(readCall(g), { channel: 'Gtr', slot: 0 }), /no saved state for slot 0 of Gtr/);
   assert.equal(typeof findSlotPreset, 'function');
+});
+
+test('readPluginState: no .song file (untitled song) is an error and never triggers File/Save', async () => {
+  for (const fileUrl of [null, 'file:///C:/x/untitled']) {
+    const log = [];
+    const call = async (op) => {
+      log.push(op);
+      if (op === 'inserts') return [{ channel: 'Gtr', inserts: [{ slot: 0, name: 'A', bypassed: false }] }];
+      if (op === 'song') return { fileUrl };
+      throw new Error(op);
+    };
+    await assert.rejects(readPluginState(call, { channel: 'Gtr', slot: 0 }), /no \.song file yet/);
+    assert.ok(!log.includes('save'));
+  }
 });
 
 test('readPluginState: a missing slot is an error before saving', async () => {

@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url';
 import { openSongArchive } from '../song.js';
 import { kids, byXid, walk } from '../xml.js';
 import { listPresets, insertPreset, slotCommand } from '../tracks.js';
-import { parseVstPreset, buildVstPreset, readJuceXml, writeJuceXml, setXmlAttrs } from './vstpreset.js';
-import { findParam } from './catalog.js';
+import { parseVstPreset, buildVstPreset, readJuceXml, writeJuceXml, setXmlAttrs, getXmlAttrs } from './vstpreset.js';
+import { findParam, matchPlugin } from './catalog.js';
 import { closePluginWindows } from './windows.js';
 import { REPO_ROOT, defaultPython } from './scan.js';
 
@@ -51,10 +51,13 @@ export function findSlotPreset(zip, channel, slot) {
   throw new Error(`no saved state for slot ${slot} of ${channel} in the song (looked for ${prefix}*.vstpreset)`);
 }
 
-async function slotInfo(call, channel, slot) {
+async function rackOf(call, channel) {
   const rack = await call('inserts', { channel });
-  const ins = (Array.isArray(rack) && rack[0] ? rack[0].inserts : []) || [];
-  const hit = ins.find((x) => x.slot === slot);
+  return (Array.isArray(rack) && rack[0] ? rack[0].inserts : []) || [];
+}
+
+async function slotInfo(call, channel, slot) {
+  const hit = (await rackOf(call, channel)).find((x) => x.slot === slot);
   if (!hit) throw new Error(`no plug-in in slot ${slot} on ${channel}`);
   return hit;
 }
@@ -62,6 +65,10 @@ async function slotInfo(call, channel, slot) {
 // -> { channel, slot, plugin, classId, cid, xml | null, raw, presetPath, source: 'song-save' }
 export async function readPluginState(call, { channel, slot }, { openArchive = openSongArchive } = {}) {
   const ins = await slotInfo(call, channel, slot);
+  // Only ever File/Save an existing .song: on an untitled song it would open Save As.
+  const { fileUrl } = await call('song');
+  const songPath = fileUrl ? fileURLToPath(fileUrl) : null;
+  if (!songPath || !/\.song$/i.test(songPath)) throw new Error('the song has no .song file yet: save it once in Studio One before editing plug-in state');
   // File/Save is greyed out while the song has no unsaved changes; the file on disk is then current.
   let saved = true;
   try {
@@ -71,9 +78,7 @@ export async function readPluginState(call, { channel, slot }, { openArchive = o
     if (!/not available/i.test(e.message)) throw new Error(`could not save the song to read the plug-in state: ${e.message}`);
     saved = false;
   }
-  const { fileUrl } = await call('song');
-  if (!fileUrl) throw new Error('the song has no file yet: save it once in Studio One');
-  const zip = openArchive(fileURLToPath(fileUrl));
+  const zip = openArchive(songPath);
   const presetPath = findSlotPreset(zip, channel, slot);
   const raw = Buffer.from(zip.raw(presetPath));
   const p = parseVstPreset(raw);
@@ -93,6 +98,13 @@ function stateValue(v, param) {
   }
   if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v;
   return undefined;
+}
+
+// Booleans as the state already spells them: "true"/"false" where the attribute holds one of those
+// (Neural), else 1/0 (JUCE APVTS <PARAM id=".." value=".."/> parses "true" as 0).
+function boolText(xml, stateKey, v) {
+  const cur = getXmlAttrs(xml, [stateKey])[stateKey];
+  return cur === 'true' || cur === 'false' ? String(v) : v ? 1 : 0;
 }
 
 // change key (catalog key or parameter name) -> { param, key, stateKey }
@@ -127,7 +139,7 @@ async function editState(state, entry, changes, runPython) {
       const r = resolve(entry, k);
       const val = stateValue(v, r.param);
       if (!r.stateKey || val === undefined) { missing.push(k); continue; }
-      attrs[r.stateKey] = val;
+      attrs[r.stateKey] = typeof val === 'boolean' ? boolText(state.xml, r.stateKey, val) : val;
       byAttr[r.stateKey] = [k, val];
     }
     const out = setXmlAttrs(state.xml, attrs);
@@ -163,6 +175,24 @@ async function editState(state, entry, changes, runPython) {
     }
   }
   throw new Error(`${entry.name} has no editable state (catalog backend: opaque); use its presets instead`);
+}
+
+// The old instance could not be removed: take the new one out again so two copies never stay in
+// series; if that fails too, bypass the new one. Always throws.
+async function rollBack(call, { channel, slot, count, newName, oldName, why }) {
+  let undone = false;
+  let undoError = null;
+  try {
+    const r = await slotCommand(call, { channel, slot, command: 'Remove', name: newName });
+    undone = r.done === true && (await rackOf(call, channel)).length === count;
+    if (!undone) undoError = r.done === true ? 'the rack did not shrink' : 'Studio One did not remove it';
+  } catch (e) { undoError = e.message; }
+  const head = `the change was not applied: removing the old instance (${oldName}) failed (${why})`;
+  if (undone) throw new Error(`${head}; the new instance was removed again and the original is unchanged in slot ${slot}`);
+  let bypassed = false;
+  try { bypassed = !!(await call('setInsertBypass', { channel, slot, bypassed: true })).after; } catch { /* reported below */ }
+  throw new Error(`${head}, and removing the new instance (${newName}) failed too (${undoError}); ` +
+    (bypassed ? `the new instance in slot ${slot} was bypassed, so only the original (now slot ${slot + 1}) is heard` : `the new instance in slot ${slot} could NOT be bypassed either: two instances are in series, remove one by hand`));
 }
 
 const safeDir = (s) => String(s).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || '_';
@@ -205,9 +235,17 @@ export async function writePluginParams(call, { channel, slot, changes, entry },
   if (!caps.xmlState && !caps.stateRoundTrip) throw new Error(`${entry.name} has no editable state (catalog backend: opaque); use its presets instead`);
   if (!changes || !Object.keys(changes).length) throw new Error('no changes given');
 
+  // A focused plug-in window can hold edits the song has not seen yet.
+  await closeWindows({ channel });
   const state = await readState(call, { channel, slot });
+  if (entry.classId ? braceClassId(entry.classId) !== braceClassId(state.classId) : matchPlugin(new Map([[entry.name, entry]]), state.plugin) !== entry) {
+    throw new Error(`slot ${slot} of ${channel} holds ${state.plugin}, not ${entry.name}; nothing changed`);
+  }
   const edit = await editState(state, entry, changes, runPython);
-  const base = { channel, slot, plugin: state.plugin, applied: edit.applied, missing: edit.missing, backend: 'state', realtime: false, source: state.source };
+  const base = {
+    channel, slot, plugin: state.plugin, applied: edit.applied, missing: edit.missing, backend: 'state', realtime: false, source: state.source,
+    note: 'The plug-in is replaced by a new instance with the edited state; changes made in its window during the few seconds of the write are lost.',
+  };
   if (!Object.keys(edit.applied).length) return base;
 
   const cid = state.cid || braceClassId(state.classId);
@@ -215,42 +253,52 @@ export async function writePluginParams(call, { channel, slot, changes, entry },
   const scratchDir = path.join(presetsRoot, safeDir(entry.vendor || 'Unknown'), safeDir(entry.name), SCRATCH_FOLDER);
   const file = path.join(scratchDir, `${name}.vstpreset`);
   const created = fs.mkdirSync(scratchDir, { recursive: true });
-  let indexed = false;
+  let reindexed = false;
   try {
     fs.writeFileSync(file, buildVstPreset({ classId: state.classId, chunks: edit.chunks }));
 
     // Re-indexing takes ~15 s and the bridge may not answer meanwhile; the preset list tells when it is done.
     let indexError = null;
+    reindexed = true;
     try { await call('command', { category: 'Presets', name: 'Re-Index Presets' }); } catch (e) { indexError = e; }
     const deadline = now() + timeoutMs;
     for (;;) {
       let found = false;
       try { found = ((await listPresets(call, cid)).presets || []).some((p) => p.name === name); } catch { /* busy indexing */ }
-      if (found) { indexed = true; break; }
+      if (found) break;
       if (now() >= deadline) {
         throw new Error(`Re-Index Presets did not list the new preset ${name} within ${Math.round(timeoutMs / 1000)} s` + (indexError ? ` (re-index: ${indexError.message})` : ''));
       }
       await sleep(pollMs);
     }
 
-    // Track Edit tasks do not run while a plug-in window is open.
+    // Track Edit tasks do not run while any plug-in window is open.
     await closeWindows();
     const old = await slotInfo(call, channel, slot);
+    const count = (await rackOf(call, channel)).length;
     const oldName = (await call('insertSlotName', { channel, slot })).name;
     const ins = await insertPreset(call, { channel, cid, preset: name, position: slot });
+
+    // Remove the old instance (now one further down); a remove that did not happen is a failure.
+    let removeError = null;
     try {
-      await slotCommand(call, { channel, slot: slot + 1, command: 'Remove', name: oldName });
-    } catch (e) {
-      throw new Error(`the new instance is in slot ${slot} (${ins.slot}) but removing the old one (${oldName}, now slot ${slot + 1}) failed: ${e.message}`);
+      const r = await slotCommand(call, { channel, slot: slot + 1, command: 'Remove', name: oldName });
+      if (r.done !== true) removeError = 'Studio One did not remove it';
+    } catch (e) { removeError = e.message; }
+    if (!removeError) {
+      const n = (await rackOf(call, channel)).length;
+      if (n !== count) removeError = `the rack has ${n} plug-ins afterwards, expected ${count}`;
     }
-    if (old.bypassed) await call('setInsertBypass', { channel, slot, bypassed: true });
+    if (removeError) await rollBack(call, { channel, slot, count, newName: ins.slot, oldName, why: removeError });
+
     const res = { ...base, slotName: ins.slot };
     const now2 = await call('insertSlotName', { channel, slot }).catch(() => null);
     if (now2 && ins.slot && now2.name !== ins.slot) res.warning = `slot ${slot} now holds ${now2.name}, not the new instance ${ins.slot}`;
+    if (old.bypassed) await call('setInsertBypass', { channel, slot, bypassed: true });
     return res;
   } finally {
     cleanup(file, scratchDir, created);
     // Re-index again so the deleted preset does not linger in Studio One's preset lists (best effort).
-    if (indexed) await call('command', { category: 'Presets', name: 'Re-Index Presets' }).catch(() => {});
+    if (reindexed) await call('command', { category: 'Presets', name: 'Re-Index Presets' }).catch(() => {});
   }
 }
