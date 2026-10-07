@@ -17,7 +17,7 @@ import {
 } from './catalog.js';
 import { defaultCatalogDir, defaultPython, scanAll } from './scan.js';
 import { readPluginState, writePluginParams, replaceSlot, loadablePreset } from './state.js';
-import { findPresetFile } from './presetfiles.js';
+import { findPresetFile, ambiguousPresetNames, parsePresetRef } from './presetfiles.js';
 import { openSongArchive } from '../song.js';
 import { walk } from '../xml.js';
 import { fileURLToPath } from 'node:url';
@@ -405,7 +405,7 @@ export const PRESET_IN_PLACE_NOTE = "Loaded in place through the plug-in's own L
 async function pluginPresetsNow(call, args, deps = {}) {
   const { plugin, action = 'list', preset } = args || {};
   const d = {
-    replace: replaceSlot, findFile: findPresetFile, pluginClass: findPluginClass, platform: process.platform,
+    replace: replaceSlot, findFile: findPresetFile, ambiguous: ambiguousPresetNames, pluginClass: findPluginClass, platform: process.platform,
     io: { loadState: (...a) => presetio.loadState(...a) }, ...deps,
   };
   const target = pluginTarget(args, { optional: true });
@@ -419,15 +419,34 @@ async function pluginPresetsNow(call, args, deps = {}) {
   // An instrument's class comes with it (also for a renamed one); otherwise by name.
   const cid = p?.instrument ? p.cls?.cid ?? classOf(p.lookupName ?? name, d) : classOf(name, d);
   const presets = (await listPresets(call, cid)).presets || [];
-  if (action === 'list') return { ...(p ? p.head : {}), plugin: name, cid, count: presets.length, presets: presets.map((x) => x.name) };
+  // The plug-in's folder is its class name ("Mai Tai" for "Mai Tai 2").
+  const folder = (p?.instrument ? p.cls?.className : null) ?? d.pluginClass(name)?.name ?? (d.presetClass ?? presetClass)(name)?.className ?? String(name).replace(/\s+\d+$/, '');
+  const exts = p && !p.instrument ? ['.preset', '.vstpreset', '.fxpreset'] : null;
+  if (action === 'list') {
+    const names = presets.map((x) => x.name);
+    // A name that stands for several files is listed as the spellings that load each of them
+    // ("./Arena", "Send FX/Arena"), so every name handed out loads as it is.
+    let ambiguous = new Map();
+    if (d.platform === 'win32') {
+      try { ambiguous = d.ambiguous(names, { folder, cid, exts }); } catch { ambiguous = new Map(); }
+    }
+    const out = [];
+    const done = new Set();
+    for (const n of names) {
+      if (!ambiguous.has(n)) out.push(n);
+      else if (!done.has(n)) { done.add(n); out.push(...ambiguous.get(n)); }
+    }
+    return {
+      ...(p ? p.head : {}), plugin: name, cid, count: out.length, presets: out,
+      ...(ambiguous.size ? { ambiguous: Object.fromEntries(ambiguous), note: 'Names in ambiguous stand for several preset files; each is listed as the Folder/Name spellings that load one of them (./Name is the one directly in the plug-in folder).' } : {}),
+    };
+  }
   if (action !== 'load') throw new Error('action must be list or load');
   // "Folder/Name" (or "./Name") picks one of several files with the same name; the list has the name.
   const listed = presetListName(preset);
   if (!presets.some((x) => x.name === listed)) throw new Error(`${name} has no preset named "${listed}" (action list shows them)`);
 
-  // The plug-in's folder is its class name ("Mai Tai" for "Mai Tai 2").
-  const folder = (p?.instrument ? p.cls?.className : null) ?? d.pluginClass(name)?.name ?? (d.presetClass ?? presetClass)(name)?.className ?? String(name).replace(/\s+\d+$/, '');
-  const found = d.platform === 'win32' ? d.findFile({ folder, preset, cid, exts: p.instrument ? null : ['.preset', '.vstpreset', '.fxpreset'] }) : null;
+  const found = d.platform === 'win32' ? d.findFile({ folder, preset, cid, exts }) : null;
   if (found) {
     const { ext, buf } = loadablePreset(found.ext, fs.readFileSync(found.file), { instrument: p.instrument, cls: { cid, name: folder } });
     await d.io.loadState(call, p.target, buf, ext);
@@ -576,7 +595,7 @@ export async function instrumentsOverview(call, deps = {}) {
 }
 
 // The name in Studio One's preset list for a preset given as "Folder/Name", "./Name" or "Name".
-export const presetListName = (preset) => String(preset ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+export const presetListName = (preset) => parsePresetRef(preset).name;
 
 // Runs a Presets command ("Export Preset" | "Load Preset File") on an insert ({ channel, slot }) or an
 // instrument ({ instrument }). The bridge checks availability first. It blocks while the file dialog is

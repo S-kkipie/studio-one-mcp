@@ -41,7 +41,10 @@ const guard = (fn) => async (args) => {
   try {
     return json(await fn(args));
   } catch (e) {
-    return fail(String(e.message || e));
+    const r = fail(String(e.message || e));
+    // Structured error data (e.g. a preset name's candidates) as a second content item, as JSON.
+    if (Array.isArray(e?.candidates)) r.content.push({ type: 'text', text: JSON.stringify({ candidates: e.candidates }) });
+    return r;
   }
 };
 
@@ -643,7 +646,7 @@ server.registerTool(
 server.registerTool(
   'live_plugin_presets',
   {
-    description: "Presets Studio One has indexed for a plug-in: list for an insert (channel + slot), an instrument (instrument, from live_instruments) or a plug-in by name (plugin); load onto an insert or an instrument. On Windows a load finds the preset's file (Studio One's Presets folders, Documents/Studio One/Presets, VST3 preset folders) and loads it in place through the plug-in's own Load Preset File: same instance, slot and bypass, the song is not saved, Studio One's preset dialog flashes briefly (inPlace: true). An instrument only ever gets its synth's part of a preset: its channel's inserts stay as they are. The user's preset folders win over factory ones; several files with the same name in one folder tree are refused with the candidates, to be picked as Folder/Name. If no file is found, an insert is replaced by a new instance made from the preset at the same position (bypass kept; inPlace: false), and an instrument load fails. Do NOT use live_undo to revert a preset load (an in-place load is not an undo step; after a replace it would bring the old instance back next to the new one): load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
+    description: "Presets Studio One has indexed for a plug-in: list for an insert (channel + slot), an instrument (instrument, from live_instruments) or a plug-in by name (plugin); load onto an insert or an instrument. On Windows a load finds the preset's file (Studio One's Presets folders, Documents/Studio One/Presets, VST3 preset folders) and loads it in place through the plug-in's own Load Preset File: same instance, slot and bypass, the song is not saved, Studio One's preset dialog flashes briefly (inPlace: true). An instrument only ever gets its synth's part of a preset: its channel's inserts stay as they are. The user's preset folders win over factory ones; a name with several files takes the one directly in the plug-in folder when there is exactly one, else it is refused with the candidates (Folder/Name picks one; ./Name is the file directly in the plug-in folder). list hands out only loadable names: an ambiguous name is listed as its Folder/Name spellings, with an ambiguous map. If no file is found, an insert is replaced by a new instance made from the preset at the same position (bypass kept; inPlace: false), and an instrument load fails. Do NOT use live_undo to revert a preset load (an in-place load is not an undo step; after a replace it would bring the old instance back next to the new one): load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
     inputSchema: targeted({
       action: z.enum(['list', 'load']),
       plugin: z.string().optional().describe('For list without a target: plug-in name as in live_plugins'),

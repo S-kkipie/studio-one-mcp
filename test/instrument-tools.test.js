@@ -10,7 +10,7 @@ import {
   pluginTarget, instrumentAt, getParams, setParams, stateChange, pluginPresets, instrumentsOverview, songInstrumentRouting,
   pickBackend, instrumentClass, savedSynthClassId, presetListName,
 } from '../src/plugins/controller.js';
-import { findPresetFile, presetFileClassId } from '../src/plugins/presetfiles.js';
+import { findPresetFile, presetFileClassId, ambiguousPresetNames } from '../src/plugins/presetfiles.js';
 import { loadablePreset } from '../src/plugins/state.js';
 import { addPlugin, addInstrumentTrack, addFxSend, INSTANCE_TIMEOUT_MS } from '../src/tracks.js';
 import { presetClass } from '../src/plugins.js';
@@ -446,4 +446,76 @@ test('preset load with Folder/Name: the list is checked by the name, the file by
   const b = loadDeps(() => { throw new Error('preset "Kick" matches 2 files'); });
   await assert.rejects(pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Kick' }, b.deps), /matches 2 files/);
   assert.equal(b.replaced.length, 0, 'an ambiguous name never falls back to a replace');
+});
+
+// ---- fix round 2: list annotation, tie-break, ./Name -------------------------------------------------
+
+const REVERB = '{11111111-2222-3333-4444-555555555555}';
+const FAT = '{5E91DC8A-E560-4115-98FA-59FB3F215BA1}';
+// Factory-shaped: Room Reverb's "Arena" in the plug-in folder and in "Send FX/"; Fat Channel's "default"
+// in the folder and in module subfolders, "Bass" only in module subfolders.
+function factoryShaped() {
+  const factory = fs.mkdtempSync(path.join(os.tmpdir(), 's1factory-'));
+  put(path.join(factory, 'PreSonus', 'Room Reverb', 'Arena.preset'), presetZip(REVERB, 'Room Reverb'));
+  put(path.join(factory, 'PreSonus', 'Room Reverb', 'Send FX', 'Arena.preset'), presetZip(REVERB, 'Room Reverb'));
+  put(path.join(factory, 'PreSonus', 'Room Reverb', 'Hall.preset'), presetZip(REVERB, 'Room Reverb'));
+  for (const sub of ['', 'Compressor FET', 'EQ Passive']) put(path.join(factory, 'PreSonus', 'Fat Channel', sub, 'default.preset'), presetZip(FAT, 'Fat Channel'));
+  for (const sub of ['Compressor FET', 'EQ Passive']) put(path.join(factory, 'PreSonus', 'Fat Channel', sub, 'Bass.preset'), presetZip(FAT, 'Fat Channel'));
+  return { factory, roots: [{ dir: factory, exts: ['.preset', '.vstpreset', '.fxpreset', '.instrument'] }] };
+}
+
+test('findPresetFile tie-break: a plain name with one file directly in the plug-in folder takes that one', () => {
+  const { factory, roots } = factoryShaped();
+  const rr = (preset) => findPresetFile({ folder: 'Room Reverb', preset, cid: REVERB, roots });
+  assert.equal(rr('Arena').file, path.join(factory, 'PreSonus', 'Room Reverb', 'Arena.preset'));
+  assert.equal(rr('./Arena').file, path.join(factory, 'PreSonus', 'Room Reverb', 'Arena.preset'));
+  assert.equal(rr('Send FX/Arena').file, path.join(factory, 'PreSonus', 'Room Reverb', 'Send FX', 'Arena.preset'));
+  const fat = (preset) => findPresetFile({ folder: 'Fat Channel', preset, cid: FAT, roots });
+  assert.equal(fat('default').file, path.join(factory, 'PreSonus', 'Fat Channel', 'default.preset'));
+  assert.equal(fat('EQ Passive/default').file, path.join(factory, 'PreSonus', 'Fat Channel', 'EQ Passive', 'default.preset'));
+  // Still several after the tie-break: refused, with the candidates as data too.
+  let err;
+  try { fat('Bass'); } catch (e) { err = e; }
+  assert.match(err.message, /preset "Bass" matches 2 files .*PreSonus\/Fat Channel\/Compressor FET\/Bass\.preset, PreSonus\/Fat Channel\/EQ Passive\/Bass\.preset/);
+  assert.deepEqual(err.candidates, ['Compressor FET/Bass', 'EQ Passive/Bass']);
+});
+
+test('findPresetFile ./Name: only a file directly in the plug-in folder, never one in a subfolder', () => {
+  const { factory, roots } = factoryShaped();
+  let err;
+  try { findPresetFile({ folder: 'Fat Channel', preset: './Bass', cid: FAT, roots }); } catch (e) { err = e; }
+  assert.equal(err.message.split(' (')[0], `no file named Bass directly in ${path.join(factory, 'PreSonus', 'Fat Channel')}`);
+  assert.deepEqual(err.candidates, ['Compressor FET/Bass', 'EQ Passive/Bass']);
+  assert.throws(() => findPresetFile({ folder: 'Room Reverb', preset: './Hall.fxpreset', cid: REVERB, roots }), /no file named Hall\.fxpreset directly in/);
+  assert.equal(findPresetFile({ folder: 'Room Reverb', preset: './Hall.preset', cid: REVERB, roots }).ext, '.preset');
+});
+
+test('list: names that stand for several files are listed as loadable Folder/Name spellings, with an ambiguous map', async () => {
+  const { roots } = factoryShaped();
+  const ambiguous = (names, o) => ambiguousPresetNames(names, { ...o, roots });
+  assert.deepEqual(Object.fromEntries(ambiguous(['Arena', 'Hall', 'Nope'], { folder: 'Room Reverb', cid: REVERB })), { Arena: ['./Arena', 'Send FX/Arena'] });
+
+  // Studio One lists "Arena" twice (one per file).
+  const call = async (op, a) => {
+    if (op === 'inserts') return [{ channel: a.channel, inserts: [{ slot: 0, name: 'Room Reverb', bypassed: false }] }];
+    if (op === 'trackTask') return { results: [{ presets: [{ index: 1, name: 'Arena' }, { index: 2, name: 'Arena' }, { index: 3, name: 'Hall' }] }] };
+    throw new Error(`unexpected ${op}`);
+  };
+  const deps = { platform: 'win32', classIdFor: () => REVERB, pluginClass: () => ({ name: 'Room Reverb', cid: REVERB }), ambiguous };
+  const r = await pluginPresets(call, { channel: 'FX', slot: 0, action: 'list' }, deps);
+  assert.deepEqual(r.presets, ['./Arena', 'Send FX/Arena', 'Hall']);
+  assert.equal(r.count, 3);
+  assert.deepEqual(r.ambiguous, { Arena: ['./Arena', 'Send FX/Arena'] });
+  // Every name handed out loads as it is.
+  const loads = [];
+  for (const preset of r.presets) {
+    const found = findPresetFile({ folder: 'Room Reverb', preset, cid: REVERB, roots, exts: ['.preset', '.vstpreset', '.fxpreset'] });
+    assert.ok(found, preset);
+    await pluginPresets(call, { channel: 'FX', slot: 0, action: 'load', preset }, {
+      ...deps, findFile: (q) => findPresetFile({ ...q, roots }), io: { loadState: async (_c, _t, buf) => { loads.push(buf.length); } },
+    });
+  }
+  assert.equal(loads.length, 3);
+  // Off Windows (no file lookups): the plain list.
+  assert.deepEqual((await pluginPresets(call, { channel: 'FX', slot: 0, action: 'list' }, { ...deps, platform: 'linux' })).presets, ['Arena', 'Arena', 'Hall']);
 });
