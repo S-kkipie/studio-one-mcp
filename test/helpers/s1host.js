@@ -13,7 +13,7 @@ export const MAILBOX = 'file:///mailbox/';
 // A document as the live object model showed it on 5.5.2: TransportPanel
 // parameters (tempo in bpm, times in seconds with a display string) and a
 // mainTrackList whose tracks with takes appear once per lane (same object).
-export function fakeDocument({ title = 'Live Song', tracks = [], tempo = 120 } = {}) {
+export function fakeDocument({ title = 'Live Song', tracks = [], tempo = 120, instruments = [] } = {}) {
   // Bar strings like "9.1.1.0" at 120 bpm in 4/4: two seconds per bar.
   const fromBars = (str) => { const [bar, beat = 1] = str.split('.').map(Number); return (bar - 1) * 2 + (beat - 1) * 0.5; };
   const param = (name, value, { min = 0, max = 1, display } = {}) => ({
@@ -81,8 +81,27 @@ export function fakeDocument({ title = 'Live Song', tracks = [], tempo = 120 } =
     selectTrack: (t, state) => { if (state && !selected.includes(t)) selected.push(t); },
     unselectAll: () => { selected = []; },
   };
+  // Environment/Synths: Inst01.. components, each with a Device child (its title is the instrument
+  // name) and preset commands. `log` records every interpretCommand(category, command, checkOnly).
+  const instLog = [];
+  const instComps = {};
+  instruments.forEach((x, i) => {
+    const cname = x.component || `Inst${String(i + 1).padStart(2, '0')}`;
+    const device = { ...fakePlugin(x.params || {}), title: x.name };
+    const comp = {
+      name: cname,
+      find: (n) => (n === 'Device' ? device : null),
+      interpretCommand: (cat, cmd, check) => {
+        instLog.push([cat, cmd, !!check]);
+        return cat === 'Presets' && x.presets !== false ? 1 : cat === 'Device' ? 1 : 0;
+      },
+    };
+    device.parent = comp;
+    instComps[cname] = comp;
+  });
+  const synths = { find: (n) => instComps[n] || null };
   return {
-    params, objs, mainTrackList, consoleChannels,
+    params, objs, mainTrackList, consoleChannels, instLog, instComps,
     addTrack: (name) => { objs.push(makeTrack({ name }, objs.length)); layout(); },
     removeTrack: (name) => { const k = objs.findIndex((o) => o.name === name); if (k >= 0) objs.splice(k, 1); layout(); },
     urls: {
@@ -94,6 +113,7 @@ export function fakeDocument({ title = 'Live Song', tracks = [], tempo = 120 } =
         getChannelList: () => ({ numChannels: consoleChannels.length, getChannel: (i) => consoleChannels[i] }),
       },
       '://hostapp/DocumentManager/ActiveDocument/TrackList': { mainTrackList },
+      ...(instruments.length ? { '://hostapp/DocumentManager/ActiveDocument/Environment/Synths': synths } : {}),
     },
   };
 }
@@ -190,7 +210,15 @@ export function fakePlugin(spec) {
 // Each channel may have inserts [{ name, bypassed }] and sends [{ to, level, muted }],
 // exposed like the surface file's sub-banks: el.find('inserts'|'sends').getElement(i).
 // Insert bypass lives on the channel as "Inserts/[i]/@bypass" (and "Inserts/bypassAll").
-export function fakeMixer(channels) {
+export function fakeMixer(channels, { presetLog = [] } = {}) {
+  const insertComp = (it, device) => {
+    const comp = {
+      name: it.fx || 'FX01', find: (n) => (n === 'Device' ? device : null),
+      interpretCommand: (cat, cmd, check) => (presetLog.push([it.name, cat, cmd, !!check]), 1),
+    };
+    if (device) device.parent = comp;
+    return comp;
+  };
   const bankOf = (items, paramsOf) => {
     const els = items.map((it) => {
       const p = paramsOf(it);
@@ -199,7 +227,7 @@ export function fakeMixer(channels) {
       const device = it.params ? fakePlugin(it.params) : null;
       return {
         device,
-        component: device || it.fx ? { name: it.fx || 'FX01', find: (n) => (n === 'Device' ? device : null) } : undefined,
+        component: device || it.fx ? insertComp(it, device) : undefined,
         params: p, isConnected: () => true, getParamValue: (id) => p[id], setParamValue: (id, v) => ((p[id] = v), true),
         // Real sendPort values are list indexes (-1 for the default bus); the name is only display text.
         connectAliasParam: (alias, id) => (alias.string = display[id] ? display[id]() : String(p[id])),

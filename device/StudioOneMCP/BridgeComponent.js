@@ -259,7 +259,81 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
     // a normalised value. The host cannot list them, so the server sends the names
     // (from the plug-in's presets); unknown names come back as null, never throw.
 
+    // Either target shape: { channel, slot } (an insert) or { instrument } (a title
+    // such as "Mai Tai 2", or a component name such as "Inst02").
     pluginOf(args) {
+        if (args && args.instrument !== undefined) return this.instrumentOf(args.instrument);
+        return this.insertPlugin(args);
+    }
+
+    // Instruments of the song: Environment/Synths holds Inst01, Inst02... and each
+    // has a "Device" child whose title is the instrument's name. Stops after two
+    // consecutive missing numbers.
+    instrumentList() {
+        const synths = docObject("Environment/Synths");
+        const out = [];
+        if (!synths || typeof synths.find !== "function") return out;
+        let misses = 0;
+        for (let i = 1; i <= 99 && misses < 2; i++) {
+            const cname = "Inst" + (i < 10 ? "0" : "") + i;
+            let comp = null;
+            try { comp = synths.find(cname); } catch (_) { comp = null; }
+            if (!comp) { misses++; continue; }
+            misses = 0;
+            let dev = null;
+            try { dev = typeof comp.find === "function" ? comp.find("Device") : null; } catch (_) { dev = null; }
+            const title = dev && typeof dev.title === "string" && dev.title !== "" ? dev.title : null;
+            out.push({ index: i, component: cname, name: title, comp: comp, dev: dev });
+        }
+        return out;
+    }
+
+    instruments() {
+        return this.instrumentList().map(x => ({ index: x.index, component: x.component, name: x.name }));
+    }
+
+    // Exact component name, then exact title, then case-insensitive title.
+    instrumentOf(ref) {
+        const want = String(ref);
+        const list = this.instrumentList();
+        const describe = xs => xs.map(x => x.component + " (" + x.name + ")").join(", ");
+        let hit = list.filter(x => x.component === want);
+        if (!hit.length) hit = list.filter(x => x.name === want);
+        if (!hit.length) hit = list.filter(x => x.name !== null && x.name.toLowerCase() === want.toLowerCase());
+        if (!hit.length) return { error: "no instrument named " + want + (list.length ? " (have: " + describe(list) + ")" : " (the song has no instruments)") };
+        if (hit.length > 1) return { error: "instrument " + want + " is ambiguous: " + describe(hit) + "; use the component name (e.g. " + hit[0].component + ")" };
+        const x = hit[0];
+        if (!x.dev || typeof x.dev.findParameter !== "function") return { error: "cannot reach the plug-in of instrument " + want };
+        return { name: x.name, device: x.dev, component: x.comp, instrument: x.component };
+    }
+
+    // { channel, slot } | { instrument } -> { component, device, name } or { error }.
+    // The component is the one that takes the Presets commands: an instrument's
+    // InstNN, or an insert's FXnn (the device's parent).
+    resolveTarget(target) {
+        const t = target || {};
+        const r = this.pluginOf(t);
+        if (r.error) return r;
+        let comp = r.component;
+        if (!comp) { try { comp = r.device.parent || null; } catch (_) { comp = null; } }
+        if (!comp || typeof comp.interpretCommand !== "function") return { error: "cannot reach the preset commands of " + r.name };
+        return { component: comp, device: r.device, name: r.name };
+    }
+
+    presetCommand(args) {
+        const command = args.command;
+        if (command !== "Export Preset" && command !== "Load Preset File") return { error: "command must be Export Preset or Load Preset File" };
+        const t = this.resolveTarget(args.target);
+        if (t.error) return t;
+        let ok = false;
+        try { ok = !!t.component.interpretCommand("Presets", command, true); } catch (_) { ok = false; }
+        if (!ok) return { error: command + " is not available for " + t.name };
+        // Blocks while the file dialog is open.
+        try { t.component.interpretCommand("Presets", command, false); } catch (e) { return { error: command + " failed: " + (e && e.message || e) }; }
+        return { ok: true };
+    }
+
+    insertPlugin(args) {
         const c = this.channelByLabel(args.channel);
         if (c.error) return c;
         const slot = this.insertsOf(c.el).find(x => x.slot === args.slot);
@@ -268,7 +342,9 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         const comp = el ? el.component : null;
         const dev = comp && typeof comp.find === "function" ? comp.find("Device") : null;
         if (!dev || typeof dev.findParameter !== "function") return { error: "cannot reach the plug-in in slot " + args.slot + " on " + args.channel };
-        return { name: slot.name, device: dev };
+        let parent = null;
+        try { parent = dev.parent || null; } catch (_) { parent = null; }
+        return { name: slot.name, device: dev, component: parent };
     }
 
     // The slot's bank element and its component ("FXnn"). Studio One names the
@@ -297,6 +373,12 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
     // Opens the slot's plug-in window and gives it the focus (what a surface's
     // select button does in plug-in mode).
     openPluginEditor(args) {
+        if (args.instrument !== undefined) {
+            const t = this.resolveTarget(args);
+            if (t.error) return t;
+            t.component.interpretCommand("Device", "Edit", false);
+            return { instrument: args.instrument, plugin: t.name, opened: true };
+        }
         const s = this.insertSlot(args);
         if (s.error) return s;
         const utils = PreSonus.HostUtils;
@@ -317,6 +399,10 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         };
     }
 
+    targetHead(args) {
+        return args.instrument !== undefined ? { instrument: args.instrument } : { channel: args.channel, slot: args.slot };
+    }
+
     pluginParams(args) {
         const plug = this.pluginOf(args);
         if (plug.error) return plug;
@@ -328,7 +414,7 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
             if (p) params.push(this.paramInfo(p));
             else missing.push(String(n));
         }
-        return { channel: args.channel, slot: args.slot, plugin: plug.name, params: params, missing: missing };
+        return Object.assign(this.targetHead(args), { plugin: plug.name, params: params, missing: missing });
     }
 
     // One of: text (display text, e.g. "4.0:1" or "-12 dB"), normalized (0..1), value (raw).
@@ -351,7 +437,7 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         } else {
             return { error: "give one of text, normalized or value" };
         }
-        return { channel: args.channel, slot: args.slot, plugin: plug.name, param: String(args.param), before: before, after: this.paramInfo(p) };
+        return Object.assign(this.targetHead(args), { plugin: plug.name, param: String(args.param), before: before, after: this.paramInfo(p) });
     }
 
     setChannel(args) {

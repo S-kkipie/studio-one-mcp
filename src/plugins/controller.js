@@ -331,6 +331,18 @@ async function removePluginNow(call, { channel, slot }, { closeWindows = closePl
   throw new Error(`Studio One did not remove ${plug.name} from slot ${slot} of ${channel}` + (r && r.done === true ? ' (the rack did not shrink)' : ''));
 }
 
+// The song's instruments: [{ index, component: 'Inst01', name: 'Mai Tai' }].
+export async function listInstruments(call) {
+  return (await call('instruments', {})) ?? [];
+}
+
+// Runs a Presets command ("Export Preset" | "Load Preset File") on an insert ({ channel, slot }) or an
+// instrument ({ instrument }). The bridge checks availability first. It blocks while the file dialog is
+// open, so the caller needs a dialog filler running and a timeout that covers it.
+export async function presetCommand(call, target, command, { timeoutMs = 30000 } = {}) {
+  return call('presetCommand', { target, command }, { timeoutMs });
+}
+
 // (Re)scans the installed VST3 plug-ins into the catalog (only new or changed files are scanned).
 export async function runScan(opts) {
   return serialized(() => runScanNow(opts));
