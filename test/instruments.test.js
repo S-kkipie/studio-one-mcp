@@ -70,14 +70,14 @@ test('pluginParams / setPluginParam on an instrument; insert shape unchanged', (
 test('openPluginEditor on an instrument runs Device/Edit on its component', () => {
   const { ring, document } = setup();
   assert.deepEqual(plain(ring('openPluginEditor', { instrument: 'Impact' }).result), { instrument: 'Impact', plugin: 'Impact', opened: true });
-  assert.deepEqual(document.instLog, [['Device', 'Edit', false]]);
+  assert.deepEqual(document.instLog, [['Device', 'Edit', true], ['Device', 'Edit', false]]);
 });
 
 test('presetCommand: check first, then run; instrument and insert targets', () => {
   const { ring, document, presetLog } = setup();
-  assert.deepEqual(plain(ring('presetCommand', { target: { instrument: 'Mai Tai' }, command: 'Export Preset' }).result), { ok: true });
+  assert.deepEqual(plain(ring('presetCommand', { target: { instrument: 'Mai Tai' }, command: 'Export Preset' }).result), { ok: true, ran: 1 });
   assert.deepEqual(document.instLog, [['Presets', 'Export Preset', true], ['Presets', 'Export Preset', false]]);
-  assert.deepEqual(plain(ring('presetCommand', { target: { channel: 'Vox', slot: 0 }, command: 'Load Preset File' }).result), { ok: true });
+  assert.deepEqual(plain(ring('presetCommand', { target: { channel: 'Vox', slot: 0 }, command: 'Load Preset File' }).result), { ok: true, ran: 1 });
   assert.deepEqual(presetLog, [['Fat Channel', 'Presets', 'Load Preset File', true], ['Fat Channel', 'Presets', 'Load Preset File', false]]);
 });
 
@@ -95,4 +95,33 @@ test('server wrappers pass the op, target and timeout through', async () => {
   assert.equal((await listInstruments(call))[0].name, 'Mai Tai');
   await presetCommand(call, { instrument: 'Mai Tai' }, 'Export Preset', { timeoutMs: 9000 });
   assert.deepEqual(seen[1], ['presetCommand', { target: { instrument: 'Mai Tai' }, command: 'Export Preset' }, { timeoutMs: 9000 }]);
+});
+
+test('gaps: Inst01 and Inst04 present (Inst02/03 deleted) still resolve, case-insensitively by component name', () => {
+  const { ring } = setup({ instruments: [{ name: 'Mai Tai' }, { component: 'Inst04', name: 'Impact' }] });
+  assert.deepEqual(plain(ring('instruments', {}).result).map((x) => x.component), ['Inst01', 'Inst04']);
+  assert.equal(ring('pluginParams', { instrument: 'Inst04', names: [] }).result.plugin, 'Impact');
+  assert.equal(ring('pluginParams', { instrument: 'inst04', names: [] }).result.plugin, 'Impact');
+  assert.equal(ring('pluginParams', { instrument: 'Impact', names: [] }).result.plugin, 'Impact');
+});
+
+test('presetCommand reports the run result; openPluginEditor guards and reports', () => {
+  const { ring, document } = setup();
+  const orig = document.instComps.Inst01.interpretCommand;
+  document.instComps.Inst01.interpretCommand = (c, m, check) => (check ? 1 : 0);
+  assert.deepEqual(plain(ring('presetCommand', { target: { instrument: 'Inst01' }, command: 'Export Preset' }).result), { ok: false, ran: 0 });
+  assert.deepEqual(plain(ring('openPluginEditor', { instrument: 'Inst01' }).result), { instrument: 'Inst01', plugin: 'Mai Tai', opened: false });
+  document.instComps.Inst01.interpretCommand = (c, m, check) => (check ? 0 : 1);
+  assert.match(ring('openPluginEditor', { instrument: 'Inst01' }).error, /cannot be opened/);
+  document.instComps.Inst01.interpretCommand = (c, m, check) => { if (check) return 1; throw new Error('boom'); };
+  assert.match(ring('openPluginEditor', { instrument: 'Inst01' }).error, /failed: boom/);
+  document.instComps.Inst01.interpretCommand = orig;
+});
+
+test('insert preset target uses the slot component, not device.parent', () => {
+  const { ring, presetLog } = setup();
+  // The fake's slot component is the one that logs; clearing parent must not matter.
+  const r = ring('presetCommand', { target: { channel: 'Vox', slot: 0 }, command: 'Export Preset' });
+  assert.equal(r.result.ok, true);
+  assert.equal(presetLog.length, 2);
 });

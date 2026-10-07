@@ -267,19 +267,18 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
     }
 
     // Instruments of the song: Environment/Synths holds Inst01, Inst02... and each
-    // has a "Device" child whose title is the instrument's name. Stops after two
-    // consecutive missing numbers.
+    // has a "Device" child whose title is the instrument's name.
     instrumentList() {
         const synths = docObject("Environment/Synths");
         const out = [];
         if (!synths || typeof synths.find !== "function") return out;
-        let misses = 0;
-        for (let i = 1; i <= 99 && misses < 2; i++) {
+        // Studio One does not renumber InstNN, so deleted instruments leave gaps:
+        // scan every number (find on a missing name is cheap).
+        for (let i = 1; i <= 99; i++) {
             const cname = "Inst" + (i < 10 ? "0" : "") + i;
             let comp = null;
             try { comp = synths.find(cname); } catch (_) { comp = null; }
-            if (!comp) { misses++; continue; }
-            misses = 0;
+            if (!comp) continue;
             let dev = null;
             try { dev = typeof comp.find === "function" ? comp.find("Device") : null; } catch (_) { dev = null; }
             const title = dev && typeof dev.title === "string" && dev.title !== "" ? dev.title : null;
@@ -296,13 +295,22 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
     instrumentOf(ref) {
         const want = String(ref);
         const list = this.instrumentList();
+        // An explicit component name resolves directly, even case-insensitively ("inst02").
+        if (/^Inst\d{2}$/i.test(want)) {
+            const cname = "Inst" + want.slice(4);
+            const direct = list.filter(x => x.component === cname);
+            if (direct.length) return this.instrumentResult(direct[0], want);
+        }
         const describe = xs => xs.map(x => x.component + " (" + x.name + ")").join(", ");
         let hit = list.filter(x => x.component === want);
         if (!hit.length) hit = list.filter(x => x.name === want);
         if (!hit.length) hit = list.filter(x => x.name !== null && x.name.toLowerCase() === want.toLowerCase());
         if (!hit.length) return { error: "no instrument named " + want + (list.length ? " (have: " + describe(list) + ")" : " (the song has no instruments)") };
         if (hit.length > 1) return { error: "instrument " + want + " is ambiguous: " + describe(hit) + "; use the component name (e.g. " + hit[0].component + ")" };
-        const x = hit[0];
+        return this.instrumentResult(hit[0], want);
+    }
+
+    instrumentResult(x, want) {
         if (!x.dev || typeof x.dev.findParameter !== "function") return { error: "cannot reach the plug-in of instrument " + want };
         return { name: x.name, device: x.dev, component: x.comp, instrument: x.component };
     }
@@ -314,8 +322,7 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         const t = target || {};
         const r = this.pluginOf(t);
         if (r.error) return r;
-        let comp = r.component;
-        if (!comp) { try { comp = r.device.parent || null; } catch (_) { comp = null; } }
+        const comp = r.component;
         if (!comp || typeof comp.interpretCommand !== "function") return { error: "cannot reach the preset commands of " + r.name };
         return { component: comp, device: r.device, name: r.name };
     }
@@ -329,8 +336,9 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         try { ok = !!t.component.interpretCommand("Presets", command, true); } catch (_) { ok = false; }
         if (!ok) return { error: command + " is not available for " + t.name };
         // Blocks while the file dialog is open.
-        try { t.component.interpretCommand("Presets", command, false); } catch (e) { return { error: command + " failed: " + (e && e.message || e) }; }
-        return { ok: true };
+        let ran = 0;
+        try { ran = t.component.interpretCommand("Presets", command, false); } catch (e) { return { error: command + " failed: " + (e && e.message || e) }; }
+        return { ok: !!ran, ran: ran };
     }
 
     insertPlugin(args) {
@@ -342,9 +350,7 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         const comp = el ? el.component : null;
         const dev = comp && typeof comp.find === "function" ? comp.find("Device") : null;
         if (!dev || typeof dev.findParameter !== "function") return { error: "cannot reach the plug-in in slot " + args.slot + " on " + args.channel };
-        let parent = null;
-        try { parent = dev.parent || null; } catch (_) { parent = null; }
-        return { name: slot.name, device: dev, component: parent };
+        return { name: slot.name, device: dev, component: comp };
     }
 
     // The slot's bank element and its component ("FXnn"). Studio One names the
@@ -376,8 +382,12 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         if (args.instrument !== undefined) {
             const t = this.resolveTarget(args);
             if (t.error) return t;
-            t.component.interpretCommand("Device", "Edit", false);
-            return { instrument: args.instrument, plugin: t.name, opened: true };
+            let can = false;
+            try { can = !!t.component.interpretCommand("Device", "Edit", true); } catch (_) { can = false; }
+            if (!can) return { error: "the editor of " + t.name + " cannot be opened right now" };
+            let ran = 0;
+            try { ran = t.component.interpretCommand("Device", "Edit", false); } catch (e) { return { error: "opening the editor of " + t.name + " failed: " + (e && e.message || e) }; }
+            return { instrument: args.instrument, plugin: t.name, opened: !!ran };
         }
         const s = this.insertSlot(args);
         if (s.error) return s;

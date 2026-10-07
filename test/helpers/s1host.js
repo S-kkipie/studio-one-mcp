@@ -216,7 +216,6 @@ export function fakeMixer(channels, { presetLog = [] } = {}) {
       name: it.fx || 'FX01', find: (n) => (n === 'Device' ? device : null),
       interpretCommand: (cat, cmd, check) => (presetLog.push([it.name, cat, cmd, !!check]), 1),
     };
-    if (device) device.parent = comp;
     return comp;
   };
   const bankOf = (items, paramsOf) => {
