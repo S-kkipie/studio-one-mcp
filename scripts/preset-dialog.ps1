@@ -10,7 +10,8 @@
 #             {"event":"found"|"ok-pressed"|"closed"} then one final {"ok":...} line.
 #   cancel:   S1MCP_FD_PID, S1MCP_FD_EXCLUDE, S1MCP_FD_TIMEOUT_MS. Presses Cancel on every NEW
 #             preset file dialog of that process until the time is up (or the caller kills it).
-#             Lines {"event":"cancelled","title":...}, then {"ok":true,"cancelled":[...]}.
+#             Lines {"event":"cancelled"|"cancel-failed","title":...}, then
+#             {"ok":true,"cancelled":[...],"failed":[...]} (failed: still open after 5 Cancels).
 #
 # A dialog is ours only when it is NEW (not in the snapshot), belongs to the bridge's Studio One
 # process, has a filename field, and its file-type filter names a preset extension. Any other
@@ -154,6 +155,7 @@ if ($mode -eq 'cancel') {
   $tries = @{}
   $maxTries = 5
   $titles = @()
+  $failed = @()
   if ($target -le 0) { Emit @{ ok = $false; error = 'no Studio One process id' }; exit 0 }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
@@ -174,13 +176,14 @@ if ($mode -eq 'cancel') {
           Emit @{ event = 'cancelled'; title = $t }
         } elseif ($tries[$k] -ge $maxTries) {
           [void]$done.Add($k)
+          $failed += $t
           Emit @{ event = 'cancel-failed'; title = $t }
         }
       }
     }
     Start-Sleep -Milliseconds 100
   }
-  Emit @{ ok = $true; cancelled = $titles }
+  Emit @{ ok = $true; cancelled = $titles; failed = $failed }
   exit 0
 }
 

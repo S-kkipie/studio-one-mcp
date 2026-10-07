@@ -10,6 +10,10 @@ import { fillFileDialog, snapshotDialogs, cancelPresetDialogs, MAX_PATH_CHARS } 
 
 // .instrument: what Studio One writes for an instrument's Export Preset (7.2.3, Mai Tai).
 export const PRESET_EXTS = ['.vstpreset', '.preset', '.fxpreset', '.instrument'];
+// What loadState accepts: never an .instrument bundle. Loading one rebuilds the instrument channel's
+// whole insert chain (live, 7.2.3: inserts recreated from the bundle, or removed when left out).
+export const LOAD_EXTS = PRESET_EXTS.filter((e) => e !== '.instrument');
+export const INSTRUMENT_LOAD_REFUSED = "loading an .instrument bundle rebuilds the channel's insert chain; load a synth-only .preset instead";
 export const COMMAND_TIMEOUT_MS = 30000;
 const STALE_MS = 10 * 60 * 1000;
 
@@ -47,6 +51,7 @@ function checkPathLength(p) {
 export const CANCEL_MARGIN_MS = 3000;
 export const LATE_CANCEL_MS = 10000;
 const isTimeout = (e) => /did not answer/.test(e?.message ?? String(e));
+const stillOpenError = (titles) => new Error(`a preset dialog is still open in Studio One (${[...new Set(titles)].join(', ')}); close it`);
 
 // Snapshot the dialogs that are already open, start the bridge call (it blocks while the dialog is
 // open), fill the dialog, then await the call.
@@ -69,20 +74,29 @@ async function runWithDialog(call, target, command, { fill, snapshot, cancelWatc
   let fillError = null;
   try { await fill({ ...fillArgs, pid, exclude, timeoutMs: COMMAND_TIMEOUT_MS + 5000, signal: stopFill.signal }); } catch (e) { fillError = e; }
   let lateCancelled = [];
+  // Preset dialogs a cancel watch pressed Cancel on but could not close: Studio One stays modal.
+  const stillOpen = [];
+  const watch = async (args) => {
+    const w = await cancelWatch(args);
+    stillOpen.push(...[].concat(w.failed ?? []));
+    return w;
+  };
   if (fillError && !fillError.found && !isSettled) {
     const stopWatch = new AbortController();
     void settled.then(() => stopWatch.abort());
     const timeoutMs = Math.max(0, COMMAND_TIMEOUT_MS - (Date.now() - started)) + CANCEL_MARGIN_MS;
-    try { lateCancelled = (await cancelWatch({ pid, exclude, timeoutMs, signal: stopWatch.signal })).cancelled; } catch { /* reported below */ }
+    try { lateCancelled = (await watch({ pid, exclude, timeoutMs, signal: stopWatch.signal })).cancelled; } catch { /* reported below */ }
   }
   const r = await settled;
   if (r.timeout) {
     let w = { cancelled: [] };
-    try { w = await cancelWatch({ pid, exclude, timeoutMs: LATE_CANCEL_MS }); } catch { /* best effort */ }
+    try { w = await watch({ pid, exclude, timeoutMs: LATE_CANCEL_MS }); } catch { /* best effort */ }
+    if (stillOpen.length) throw stillOpenError(stillOpen);
     const cancelled = lateCancelled.length + w.cancelled.length > 0;
     throw new Error(cancelled ? 'Studio One took too long; the preset dialog was cancelled'
       : `Studio One took too long; no preset dialog was seen to cancel${fillError ? ` (${fillError.message})` : ''}`);
   }
+  if (stillOpen.length) throw stillOpenError(stillOpen);
   if (r.error) throw r.error;
   if (fillError) {
     // The call returned OK although the filler never saw our dialog (it was stopped while
@@ -125,7 +139,8 @@ export async function exportState(call, target, { fill = fillFileDialog, snapsho
 export async function loadState(call, target, buf, ext, { fill = fillFileDialog, snapshot = snapshotDialogs, cancelWatch = cancelPresetDialogs, tmpDir = defaultTmpDir() } = {}) {
   const e = String(ext || '').toLowerCase();
   const dotted = e.startsWith('.') ? e : '.' + e;
-  if (!PRESET_EXTS.includes(dotted)) throw new Error(`loadState: unsupported preset extension ${ext} (use ${PRESET_EXTS.join(', ')})`);
+  if (dotted === '.instrument') throw new Error(INSTRUMENT_LOAD_REFUSED);
+  if (!LOAD_EXTS.includes(dotted)) throw new Error(`loadState: unsupported preset extension ${ext} (use ${LOAD_EXTS.join(', ')})`);
   return withDialogLock(async () => {
     fs.mkdirSync(tmpDir, { recursive: true });
     sweepStale(tmpDir);

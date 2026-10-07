@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { buildVstPreset, parseVstPreset, readJuceXml, writeJuceXml } from '../src/plugins/vstpreset.js';
 import { execFileSync } from 'node:child_process';
-import { readPluginState, writePluginParams, findSlotPreset, braceClassId, APPLY_STATE_SCRIPT } from '../src/plugins/state.js';
+import { readPluginState, writePluginParams, findSlotPreset, braceClassId, APPLY_STATE_SCRIPT, packExport, IN_PLACE_NOTE } from '../src/plugins/state.js';
 import { defaultPython } from '../src/plugins/scan.js';
 
 const CLASS_ID = 'ABCDEF019182FAEB4E4453504E4A5058';
@@ -624,4 +624,28 @@ test('fallback: off Windows the song-save + replace path is used, and presetio i
   assert.equal(r.inPlace, undefined);
   assert.ok(ops(st).includes('insertPreset'));
   await assert.rejects(readPluginState(async () => { throw new Error('x'); }, { instrument: 'Mai Tai' }, { platform: 'linux', io }), /instrument.*Windows/);
+});
+
+test('packExport: the instrument metainfo loses its own DataFile/DataMimeType/MimeType whatever the quoting', () => {
+  const meta = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaInformation>
+	<Attribute id="Class:ID" value="${SYNTH_ID}"/>
+	<Attribute id="Document:MimeType" value="application/x.presonus-instrument" />
+	<Attribute id='Preset:DataFile' value='Synth X.vstpreset'/>
+	<Attribute  id="Preset:DataMimeType"  value="application/x-steinberg-vstpreset"  />
+</MetaInformation>`;
+  const { ext, buf } = packExport({ kind: 'instrument', meta, dataFile: 'Synth X.vstpreset', mime: 'application/x-steinberg-vstpreset' }, preset());
+  assert.equal(ext, '.preset');
+  const out = strFromU8(unzipSync(new Uint8Array(buf))['metainfo.xml']);
+  assert.equal((out.match(/Document:MimeType/g) || []).length, 1);
+  assert.equal((out.match(/Preset:DataFile/g) || []).length, 1);
+  assert.equal((out.match(/Preset:DataMimeType/g) || []).length, 1);
+  assert.match(out, /Document:MimeType" value="application\/x-presonus-preset"/);
+  assert.match(out, /Preset:DataFile" value="data\.vstpreset"/);
+  assert.match(out, /Class:ID" value="\{ABCDEF01/);
+});
+
+test('the in-place note says a write is read-modify-write (window edits during it are overwritten)', () => {
+  assert.match(IN_PLACE_NOTE, /read-modify-write/);
+  assert.match(IN_PLACE_NOTE, /window/);
 });

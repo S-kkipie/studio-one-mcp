@@ -297,3 +297,38 @@ test('sweepStale removes our temp files older than 10 minutes, once per folder',
   assert.deepEqual(fs.readdirSync(tmpDir), ['new.preset']);
   fs.rmSync(tmpDir, { recursive: true });
 });
+
+test('loadState refuses an .instrument bundle (it rebuilds the insert chain); export still allows it', async () => {
+  const tmpDir = freshDir();
+  const ops = [];
+  const call = async (op) => { ops.push(op); return { ok: true, ran: 1 }; };
+  for (const ext of ['.instrument', 'instrument', '.INSTRUMENT']) {
+    await assert.rejects(loadState(call, { instrument: 'Mai Tai' }, Buffer.from('x'), ext, { fill: async () => ({ ok: true }), ...deps([]), tmpDir }),
+      { message: "loading an .instrument bundle rebuilds the channel's insert chain; load a synth-only .preset instead" });
+  }
+  assert.deepEqual(ops, []);
+  const bridge = fakeBridge([]);
+  const fill = async (a) => { fs.writeFileSync(a.path + '.instrument', Buffer.from('zip')); bridge.release(); return { ok: true }; };
+  assert.equal((await exportState(bridge.call, { instrument: 'Mai Tai' }, { fill, ...deps([]), tmpDir })).ext, '.instrument');
+  assert.deepEqual(fs.readdirSync(tmpDir), []);
+  fs.rmSync(tmpDir, { recursive: true });
+});
+
+test('a preset dialog the cancel watch could not close is an explicit error (timeout and late-dialog paths)', async () => {
+  const tmpDir = freshDir();
+  const MSG = /^Error: a preset dialog is still open in Studio One \(Exportar preset\); close it$/;
+  // Bridge timeout: the late-cancel watch fails to close the dialog.
+  const b1 = fakeBridge([]);
+  const fill1 = (a) => { setTimeout(() => b1.reject(new Error(TIMEOUT_MSG)), 10); return blockUntilAborted(() => {})(a); };
+  await assert.rejects(exportState(b1.call, { channel: 'X', slot: 0 }, { fill: fill1, ...deps([], { cancelWatch: async () => ({ cancelled: [], failed: ['Exportar preset'] }) }), tmpDir }), MSG);
+  // Fill failed before finding the dialog, call still pending: the watch during the call fails to close it.
+  const b2 = fakeBridge([]);
+  const cancelWatch = (a) => new Promise((resolve) => {
+    setTimeout(() => b2.release({ ok: true, ran: 1 }), 10);
+    a.signal.addEventListener('abort', () => resolve({ cancelled: [], failed: ['Exportar preset'] }));
+  });
+  const fill2 = async () => { throw Object.assign(new Error('file dialog: no preset file dialog appeared'), { found: false }); };
+  await assert.rejects(exportState(b2.call, { channel: 'X', slot: 0 }, { fill: fill2, ...deps([], { cancelWatch }), tmpDir }), MSG);
+  assert.deepEqual(fs.readdirSync(tmpDir), []);
+  fs.rmSync(tmpDir, { recursive: true });
+});

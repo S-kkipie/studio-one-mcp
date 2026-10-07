@@ -104,7 +104,7 @@ Then run the **first scan in a terminal**, with `npm run scan` in the studio-one
 4. Export once more and compare: a change that does not read back as asked is listed in `unconfirmed`.
 5. Delete the temporary files.
 
-The instance, its slot, its channel and its bypass are untouched, the song is not saved, and the result says `inPlace: true`. One change takes a few seconds (each dialog round about 2 s), and the preset dialog flashes briefly. `live_undo` does not revert it: the load is not an undo step, so an undo lands on an earlier edit instead. Set the previous values to go back. For an instrument, only the synth's own state is loaded (as a synth-only `.preset`): loading the `.instrument` bundle Studio One exports would rebuild the instrument channel's whole insert chain.
+The instance, its slot, its channel and its bypass are untouched, the song is not saved, and the result says `inPlace: true`. One change takes a few seconds (each dialog round about 2 s), and the preset dialog flashes briefly. It is still read-modify-write: a knob turned in the plug-in's window during those seconds is overwritten by the exported-and-edited state. `live_undo` does not revert it: the load is not an undo step, so an undo lands on an earlier edit instead. Set the previous values to go back. For an instrument, only the synth's own state is loaded (as a synth-only `.preset`): loading the `.instrument` bundle Studio One exports would rebuild the instrument channel's whole insert chain.
 
 On other systems (no file-dialog automation) a `state` change works like this:
 
@@ -117,7 +117,7 @@ On other systems (no file-dialog automation) a `state` change works like this:
 
 This takes a few seconds per change, about 3 to 4 s here. With a large preset library, re-indexing can take up to about 15 s. Batch several changes into one call (`changes: { name: value }`), so they cost one round-trip (this holds for the in-place path too). Keep these points in mind:
 
-- Replace path only: edits made in the plug-in's window while a change runs are lost, and the instance name can alternate between "Name" and "Name 2".
+- Both paths are read-modify-write: edits made in the plug-in's window while a change runs (a few seconds) are overwritten. Replace path only: the instance name can alternate between "Name" and "Name 2".
 - **Do NOT use `live_undo` to revert a replace-path parameter change or a preset load: it brings the old instance back next to the new one. Set the previous values or load the previous preset instead.**
 - Values are numbers in the parameter's display units, or on/off. A choice such as an amp type is its index (0 .. choices − 1, as `live_plugin_params` shows it); text such as "Clean" is refused, because the plug-in would read it as some arbitrary number.
 - A parameter name the plug-in does not have is refused, before anything is exported or saved.

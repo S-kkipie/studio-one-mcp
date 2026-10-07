@@ -112,12 +112,14 @@ export async function fillFileDialog({ path: p, expect, pid, exclude = [], timeo
 }
 
 // Presses Cancel on every NEW preset file dialog of `pid` for up to timeoutMs (or until `signal`).
-// Never OK. -> { cancelled: [titles] }.
+// Never OK. -> { cancelled: [titles], failed: [titles still open after the retries] }.
 export async function cancelPresetDialogs({ pid, exclude = [], timeoutMs = 10000, signal, platform = process.platform, run = runScript } = {}) {
   if (platform !== 'win32') throw notWindows();
   if (!Number.isInteger(pid) || pid <= 0) throw new Error('cancelPresetDialogs needs the Studio One process id');
   const { stdout } = await exec(run, { S1MCP_FD_MODE: 'cancel', ...envFor(pid, exclude, timeoutMs) }, { timeout: timeoutMs + 20000, signal });
   const { events, final } = parseLines(stdout);
-  if (final && final.cancelled != null) return { cancelled: [].concat(final.cancelled) };
-  return { cancelled: events.filter((e) => e.event === 'cancelled').map((e) => e.title) };
+  // failed: preset dialogs that were still open after the bounded Cancel retries.
+  const failed = events.filter((e) => e.event === 'cancel-failed').map((e) => e.title);
+  if (final && final.cancelled != null) return { cancelled: [].concat(final.cancelled), failed: final.failed != null ? [].concat(final.failed) : failed };
+  return { cancelled: events.filter((e) => e.event === 'cancelled').map((e) => e.title), failed };
 }

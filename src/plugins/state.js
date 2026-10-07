@@ -133,7 +133,8 @@ export function packExport(container, raw) {
   const data = 'data' + path.extname(container.dataFile).toLowerCase();
   const mime = /\.vstpreset$/.test(data) ? 'application/x-steinberg-vstpreset' : String(container.mime || '').replace(/\+xml$/, '');
   let meta = container.meta || '<?xml version="1.0" encoding="UTF-8"?>\n<MetaInformation>\n</MetaInformation>';
-  meta = meta.replace(/\s*<Attribute id="(?:Preset:DataFile|Preset:DataMimeType|Document:MimeType)" value="[^"]*"\/>/g, '');
+  // Any quoting and spacing: id="x" value="y"/>, " />, single quotes.
+  meta = meta.replace(/\s*<Attribute\s+id\s*=\s*(["'])(?:Preset:DataFile|Preset:DataMimeType|Document:MimeType)\1\s+value\s*=\s*(["'])[^"']*\2\s*\/>/g, '');
   meta = meta.replace('</MetaInformation>',
     `\t<Attribute id="Document:MimeType" value="application/x-presonus-preset"/>\n\t<Attribute id="Preset:DataFile" value="${data}"/>\n\t<Attribute id="Preset:DataMimeType" value="${mime}"/>\n</MetaInformation>`);
   return { ext: '.preset', buf: Buffer.from(zipSync({ [data]: new Uint8Array(raw), 'metainfo.xml': strToU8(meta) })) };
@@ -418,7 +419,7 @@ function checkEntry(entry, changes) {
   if (!changes || !Object.keys(changes).length) throw new Error('no changes given');
 }
 
-export const IN_PLACE_NOTE = 'Loaded in place through the plug-in\'s own Load Preset File: same instance, slot and bypass, and the song was not saved. Not realtime (a few seconds; Studio One\'s preset dialog flashes briefly).';
+export const IN_PLACE_NOTE = 'Loaded in place through the plug-in\'s own Load Preset File: same instance, slot and bypass, and the song was not saved. Not realtime (a few seconds; Studio One\'s preset dialog flashes briefly). It is read-modify-write: a knob turned in the plug-in window during those seconds is overwritten.';
 
 /**
  * Sets parameters of a plug-in through its state, in one round-trip. `target` is { channel, slot }

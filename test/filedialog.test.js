@@ -86,12 +86,12 @@ test('snapshot: runs the script in snapshot mode; pid and handles back', async (
 test('cancel watch: cancel mode with the snapshot; reports cancelled titles, also when stopped early', async () => {
   let env;
   const run = async (_c, _a, opts) => { env = opts.env; return '{"event":"cancelled","title":"Exportar preset"}\n{"ok":true,"cancelled":["Exportar preset"]}'; };
-  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, timeoutMs: 5000, run }), { cancelled: ['Exportar preset'] });
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, timeoutMs: 5000, run }), { cancelled: ['Exportar preset'], failed: [] });
   assert.equal(env.S1MCP_FD_MODE, 'cancel');
   assert.equal(env.S1MCP_FD_EXCLUDE, '65552,131090');
   assert.equal(env.S1MCP_FD_TIMEOUT_MS, '5000');
-  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => ({ stdout: '{"event":"cancelled","title":"Cargar preset"}\n', aborted: true }) }), { cancelled: ['Cargar preset'] });
-  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => '{"ok":true,"cancelled":[]}' }), { cancelled: [] });
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => ({ stdout: '{"event":"cancelled","title":"Cargar preset"}\n', aborted: true }) }), { cancelled: ['Cargar preset'], failed: [] });
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => '{"ok":true,"cancelled":[]}' }), { cancelled: [], failed: [] });
 });
 
 test('runScript: an abort kills the process and keeps what it printed', async () => {
@@ -154,4 +154,17 @@ test('the script: cancel mode marks a dialog done only once it is gone, with bou
   const done = cancelBlock.indexOf('$done.Add', click);
   assert.ok(click >= 0 && shown > click && done > shown, 'Shown re-check between Click and done');
   assert.match(cancelBlock, /-ge \$maxTries/);
+});
+
+test('cancel watch: dialogs it could not close come back as failed (final JSON, or the events when stopped early)', async () => {
+  const base = { pid: 4242, exclude: [] };
+  const win = { platform: 'win32' };
+  const out = '{"event":"cancelled","title":"Cargar preset"}\n{"event":"cancel-failed","title":"Exportar preset"}\n{"ok":true,"cancelled":["Cargar preset"],"failed":["Exportar preset"]}';
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => out }), { cancelled: ['Cargar preset'], failed: ['Exportar preset'] });
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => ({ stdout: '{"event":"cancel-failed","title":"Exportar preset"}\n', aborted: true }) }), { cancelled: [], failed: ['Exportar preset'] });
+  // PowerShell's ConvertTo-Json writes a one-item array as a string.
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => '{"ok":true,"cancelled":[],"failed":"Exportar preset"}' }), { cancelled: [], failed: ['Exportar preset'] });
+  const s = SCRIPT.slice(SCRIPT.indexOf("if ($mode -eq 'cancel')"), SCRIPT.indexOf("if ($mode -ne 'fill')"));
+  assert.match(s, /\$failed \+= \$t/);
+  assert.match(s, /Emit @\{ ok = \$true; cancelled = \$titles; failed = \$failed \}/);
 });
