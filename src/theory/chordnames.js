@@ -3,11 +3,16 @@
 // and a 12-slot interval mask ("FF 0 0 FF ..." where non-zero = interval present).
 export const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 
-export const fifthsToPitchClass = (i) => (((i * 7) % 12) + 12) % 12;
+export const fifthsToPitchClass = (i) => {
+  const n = Math.round(Number(i));
+  return Number.isFinite(n) ? (((n * 7) % 12) + 12) % 12 : 0;
+};
 
+// Only the first 12 slots count. Slot values are non-zero markers: seen FF, and
+// also small order values like 1/3/5, so presence is all that matters.
 export function parseIntervalsMask(mask) {
   const out = [];
-  String(mask || '').trim().split(/\s+/).forEach((slot, i) => {
+  String(mask || '').trim().split(/\s+/).slice(0, 12).forEach((slot, i) => {
     if (slot && parseInt(slot, 16) !== 0 && !Number.isNaN(parseInt(slot, 16))) out.push(i);
   });
   return out;
@@ -36,8 +41,9 @@ const QUALITIES = {
 
 export function chordName(rootPc, intervals, bassPc = null) {
   const sorted = [...intervals].sort((a, b) => a - b);
-  const q = QUALITIES[sorted.join(',')];
-  const root = NOTE_NAMES[rootPc];
+  const key = sorted.join(',');
+  const q = Object.hasOwn(QUALITIES, key) ? QUALITIES[key] : undefined;
+  const root = NOTE_NAMES[Math.round(Number(rootPc))] ?? NOTE_NAMES[fifthsToPitchClass(rootPc)];
   let name = q !== undefined ? root + q : `${root}(${intervals.join(',')})`;
   if (bassPc !== null && bassPc !== undefined && bassPc !== rootPc) name += `/${NOTE_NAMES[bassPc]}`;
   return name;

@@ -231,7 +231,9 @@ export function readChords(chordTrack, t) {
       if (!a) return null;
       const startBeat = num(ev.attrs.start);
       const rootPc = fifthsToPitchClass(num(a.attrs.root));
+      // A `name` on the event is a user label (e.g. from a rename); the chord is root + intervals.
       return {
+        ...(ev.attrs.name ? { label: ev.attrs.name } : {}),
         chord: chordName(rootPc, parseIntervalsMask(a.attrs.intervals)),
         startBeat: round(startBeat),
         lengthBeats: round(num(ev.attrs.length)),

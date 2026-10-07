@@ -125,7 +125,7 @@ export const KEYS_NOTES = [
 const chordTrack = `
       <ChordTrack version="1" timeFormat="2" followEnabled="1"><Attributes x:id="attributes" height="28"/>
         <ChordEvent timeFormat="2" length="4"><Attributes x:id="chord" root="0" intervals="FF 0 0 FF 0 0 0 FF 0 0 0 0" type="1"/></ChordEvent>
-        <ChordEvent timeFormat="2" start="4" length="4"><Attributes x:id="chord" root="1" intervals="FF 0 0 0 FF 0 0 FF 0 0 0 0" type="1"/></ChordEvent>
+        <ChordEvent timeFormat="2" start="4" length="4" name="G7"><Attributes x:id="chord" root="1" intervals="FF 0 0 0 FF 0 0 FF 0 0 0 0" type="1"/></ChordEvent>
         <UID x:id="channelID" uid="{CH-CHORD}"/>
       </ChordTrack>`;
 const keySigMap = '<KeySignatureMap x:id="keySignatureMap"><Attributes root="0" scale="" start="0" anchor="1"/></KeySignatureMap>';

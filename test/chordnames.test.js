@@ -23,3 +23,11 @@ test('chord names from the table, unknown sets and slash bass', () => {
   assert.equal(chordName(0, [0, 4, 7], 0), 'C');
   assert.equal(NOTE_NAMES.length, 12);
 });
+
+test('mask uses first 12 slots; lookup is safe against odd keys and roots', () => {
+  assert.deepEqual(parseIntervalsMask('1 0 0 3 0 0 0 5 0 0 0 0 FF FF'), [0, 3, 7]);
+  assert.equal(chordName(0, ['constructor']), 'C(constructor)');
+  assert.equal(chordName(0, ['__proto__']), 'C(__proto__)');
+  assert.ok(!chordName(1.4, [0, 4, 7]).includes('undefined'));
+  assert.equal(fifthsToPitchClass(NaN), 0);
+});

@@ -90,6 +90,7 @@ test('insert settings from the saved preset; automation mode and envelopes with 
 test('chord track and key signatures from the saved song', () => {
   const s = readSong(fixture({ harmony: true }));
   assert.deepEqual(s.chords.map((c) => [c.chord, c.startBeat, c.lengthBeats, c.bar]), [['Cm', 0, 4, 1], ['G', 4, 4, 2]]);
+  assert.deepEqual(s.chords.map((c) => c.label), [undefined, 'G7'], 'event name is a label, not the chord');
   assert.deepEqual(s.keySignatures, [{ root: 'C', scale: '', startBeat: 0 }]);
   assert.ok(!s.tracks.some((t) => t.type === 'ChordTrack'));
   const sum = summarizeSong(s);
