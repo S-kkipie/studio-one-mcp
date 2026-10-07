@@ -97,6 +97,6 @@ test('settings parsing: self-closing sections, section boundary, drive roots', (
   assert.deepEqual(exportFolders(song, 'mixdown', { readSettingsXml: () => empty }), [dflt('Mixdown')]);
   if (process.platform === 'win32') {
     const root = `<Section path="SongRenderer"><Url url="file:///C:/"/></Section>`;
-    assert.equal(exportFolders(song, 'mixdown', { readSettingsXml: () => root })[0], 'C:\');
+    assert.equal(exportFolders(song, 'mixdown', { readSettingsXml: () => root })[0], 'C:' + path.sep);
   }
 });

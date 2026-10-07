@@ -29,8 +29,8 @@ async function exec(run, env, timeout) {
 export async function windowsSnapshot(pid, { run = runScript, platform = process.platform } = {}) {
   if (platform !== 'win32') throw notWindows();
   const stdout = await exec(run, { S1MCP_XD_MODE: 'snapshot', S1MCP_XD_PID: String(pid) }, 20000);
-  const { final } = parseLines(stdout);
-  if (!final || final.windows === undefined) throw new Error(`export dialog: unexpected snapshot output: ${String(stdout).trim().slice(0, 300)}`);
+  const final = String(stdout).split(/\r?\n/).map((l) => { try { return JSON.parse(l.trim()); } catch { return null; } }).filter((o) => o && 'windows' in o).pop();
+  if (!final) throw new Error(`export dialog: unexpected snapshot output: ${String(stdout).trim().slice(0, 300)}`);
   return [].concat(final.windows).map(String);
 }
 
