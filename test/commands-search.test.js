@@ -37,3 +37,15 @@ test('argSummary shows choices, ranges and booleans', () => {
   assert.equal(argSummary(cat.commands[0]), 'Mode(Add/Subtract|Set all to), AddValue(-64..64), Relative(on|off)');
   assert.equal(argSummary(cat.commands[4]), '');
 });
+
+test('stopwords are ignored unless the query is only stopwords', () => {
+  const r = searchCommands(cat, 'la de el');
+  assert.deepEqual(r, []);
+  assert.equal(searchCommands(cat, 'iniciar el')[0].command, 'Transport/Start');
+});
+
+test('synonyms match whole words only, not prefixes', () => {
+  const c = { commands: [{ command: 'Edit/Clipboard Paste', category: 'Edit', name: 'Clipboard Paste', displayCategory: 'Edicion', displayName: 'Pegar', variableArgs: false, args: [], examples: [] }] };
+  assert.deepEqual(searchCommands(c, 'region'), []);
+  assert.equal(searchCommands(c, 'clip').length, 1);
+});

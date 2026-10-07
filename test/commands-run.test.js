@@ -35,3 +35,21 @@ test('no schema: passes through with a warning', () => {
   assert.deepEqual(r.flat, ['Name', 'Chorus']);
   assert.match(r.warnings[0], /not checked/);
 });
+
+test('numeric validation', () => {
+  assert.throws(() => normalizeArgs(T, { AddValue: NaN }), /AddValue must be a finite number/);
+  assert.throws(() => normalizeArgs(T, { AddValue: Infinity }), /finite number/);
+  assert.throws(() => normalizeArgs(T, { AddValue: 'abc' }), /AddValue must be a number/);
+  assert.throws(() => normalizeArgs(T, { AddValue: 1.5 }), /AddValue must be a whole number/);
+});
+
+test('choices and bool strictness', () => {
+  assert.throws(() => normalizeArgs(T, { Mode: 5 }), /Mode must be one of/);
+  assert.deepEqual(normalizeArgs(T, { Mode: 1 }).flat, ['Mode', 1]);
+  assert.throws(() => normalizeArgs(T, { Relative: 7 }), /Relative must be/);
+  assert.deepEqual(normalizeArgs(T, { Relative: 0 }).flat, ['Relative', 0]);
+});
+
+test('duplicate canonical keys throw', () => {
+  assert.throws(() => normalizeArgs(T, { mode: 0, MODE: 1 }), /duplicate argument Mode/);
+});

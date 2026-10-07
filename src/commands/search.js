@@ -6,8 +6,11 @@ export function fold(s) {
 
 function words(s) { return fold(s).split(' ').filter(Boolean); }
 
-function wordMatches(fieldWords, alt) {
-  return fieldWords.some((w) => w === alt || (alt.length >= 3 && w.startsWith(alt)));
+const STOPWORDS = new Set('a de del la el los las un una unos unas y o en con para por al the of to and in on an'.split(' '));
+
+// prefix=false: exact word match only (used for synonym alternatives, e.g. clip must not hit Clipboard)
+function wordMatches(fieldWords, alt, prefix = true) {
+  return fieldWords.some((w) => w === alt || (prefix && alt.length >= 3 && w.startsWith(alt)));
 }
 
 export function argSummary(entry) {
@@ -27,11 +30,12 @@ function scoreEntry(entry, rawQuery, foldedQuery, tokens) {
   const argW = (entry.args ?? []).flatMap((a) => [...words(a.name), ...(a.choices ?? []).flatMap((c) => words(c.label))]);
   let score = 0;
   for (const t of tokens) {
-    const alts = [t, ...synonyms(t)];
-    if (alts.some((a) => wordMatches(nameW, a))) score += 3;
-    if (alts.some((a) => wordMatches(dispW, a))) score += 3;
-    if (alts.some((a) => wordMatches(catW, a))) score += 1;
-    if (alts.some((a) => wordMatches(argW, a))) score += 1;
+    const syn = synonyms(t);
+    const hit = (fw) => wordMatches(fw, t) || syn.some((a) => wordMatches(fw, a, false));
+    if (hit(nameW)) score += 3;
+    if (hit(dispW)) score += 3;
+    if (hit(catW)) score += 1;
+    if (hit(argW)) score += 1;
   }
   if (foldedQuery.length >= 4 && (fold(entry.name).includes(foldedQuery) || fold(entry.displayName).includes(foldedQuery))) score += 5;
   return score;
@@ -40,8 +44,10 @@ function scoreEntry(entry, rawQuery, foldedQuery, tokens) {
 export function searchCommands(catalog, query, { limit = 10 } = {}) {
   const rawQuery = String(query ?? '').trim();
   const foldedQuery = fold(rawQuery);
-  const tokens = foldedQuery.split(' ').filter(Boolean);
-  if (!tokens.length) return [];
+  const all = foldedQuery.split(' ').filter(Boolean);
+  if (!all.length) return [];
+  const content = all.filter((t) => !STOPWORDS.has(t));
+  const tokens = content.length ? content : all;
   return (catalog.commands ?? [])
     .map((e) => ({ e, score: scoreEntry(e, rawQuery, foldedQuery, tokens) }))
     .filter((x) => x.score > 0)
