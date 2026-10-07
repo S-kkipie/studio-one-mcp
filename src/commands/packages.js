@@ -13,9 +13,9 @@ export function readPackage(buf) {
   while ((i = buf.indexOf(MARK, i)) >= 0) {
     let j = i + 8;
     let name = '';
-    while (j + 1 < buf.length && buf.readUInt16LE(j) !== 0) { name += String.fromCharCode(buf.readUInt16LE(j)); j += 2; }
+    while (j + 1 < buf.length && buf.readUInt16LE(j) !== 0 && j - (i + 8) < 520) { name += String.fromCharCode(buf.readUInt16LE(j)); j += 2; }
+    if (j - (i + 8) >= 520 || j + 2 + 9 + 24 > buf.length) { i += 1; continue; } // not a real entry
     j += 2 + 9;
-    if (j + 24 > buf.length) break;
     const offset = Number(buf.readBigUInt64LE(j));
     const csize = Number(buf.readBigUInt64LE(j + 8));
     i = j + 24;

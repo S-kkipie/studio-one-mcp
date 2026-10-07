@@ -30,11 +30,20 @@ test('parseMacro reads steps and typed args', () => {
 
 test('readMacroExamples groups by command, caps at 5, skips bad files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's1mac-'));
-  for (let i = 0; i < 7; i++) fs.writeFileSync(path.join(dir, `m${i}.studioonemacro`), M.replace('+ 5th &amp; more', `m${i}`));
+  for (let i = 0; i < 7; i++) fs.writeFileSync(path.join(dir, `m${i}.studioonemacro`), M.replace('+ 5th &amp; more', `m${i}`).replace('value="7"', `value="${i}"`));
   fs.writeFileSync(path.join(dir, 'bad.studioonemacro'), 'garbage');
   fs.writeFileSync(path.join(dir, 'other.txt'), M);
   const ex = readMacroExamples([dir, path.join(dir, 'missing')]);
   assert.equal(ex['Musical Functions/Transpose'].length, 5);
   assert.deepEqual(ex['Marker/Insert Named'][0].args, { Name: 'Chorus' });
   assert.equal(ex['Edit/Select All'], undefined);
+});
+
+test('readMacroExamples dedupes identical args and tolerates prototype-like names', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 's1mac-'));
+  const x = (n) => `<Macro title="${n}"><CommandElement category="" name="constructor"><CommandArgument name="A" value="1"/></CommandElement></Macro>`;
+  fs.writeFileSync(path.join(dir, 'a.studioonemacro'), x('a'));
+  fs.writeFileSync(path.join(dir, 'b.studioonemacro'), x('b'));
+  const ex = readMacroExamples([dir]);
+  assert.deepEqual(ex.constructor, [{ macro: 'a', args: { A: 1 } }]);
 });

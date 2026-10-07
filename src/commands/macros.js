@@ -48,19 +48,20 @@ function* macroFiles(dir) {
 // -> { 'Category/Name': [{ macro, args }] }, at most 5 per command; steps without
 // arguments teach nothing and are skipped.
 export function readMacroExamples(dirs) {
-  const out = {};
+  const out = new Map(); // not {}: a step named "constructor" must not hit Object.prototype
   for (const dir of dirs) {
     for (const file of macroFiles(dir)) {
       let macro;
       try { macro = parseMacro(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { continue; }
       for (const s of macro.steps) {
         if (!Object.keys(s.args).length) continue;
-        const list = (out[s.command] ||= []);
-        if (list.length < MAX_EXAMPLES) list.push({ macro: macro.title, args: s.args });
+        if (!out.has(s.command)) out.set(s.command, []);
+        const list = out.get(s.command);
+        if (list.length < MAX_EXAMPLES && !list.some((x) => JSON.stringify(x.args) === JSON.stringify(s.args))) list.push({ macro: macro.title, args: s.args });
       }
     }
   }
-  return out;
+  return Object.fromEntries(out);
 }
 
 export function macroDirs() {
