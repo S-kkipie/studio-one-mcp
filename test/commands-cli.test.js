@@ -70,3 +70,17 @@ test('refresh and usage', async () => {
   assert.equal(await runCmd(['help'], { call: t.call, getCatalog, out: t.out }), 0);
   assert.equal(await runCmd([], { call: t.call, getCatalog, out: t.out }), 2);
 });
+
+test('--Name=value, boolean values, limit errors, empty displayName', async () => {
+  const r = parseCmdArgs(['run', 'A/B', '--Mode=Add/Subtract', '--check=false', '--X=a=b']);
+  assert.deepEqual(r.cmdArgs, { Mode: 'Add/Subtract', X: 'a=b' });
+  assert.equal(r.flags.check, false);
+  assert.equal(parseCmdArgs(['find', 'x', '--limit=5']).flags.limit, '5');
+  const t = mk();
+  assert.equal(await runCmd(['find', 'x', '--limit'], { call: t.call, getCatalog, out: t.out }), 2);
+  assert.equal(await runCmd(['find', 'x', '--json=maybe'], { call: t.call, getCatalog, out: t.out }), 2);
+  const t2 = mk();
+  const gc = async () => ({ ...catalog, commands: [{ command: 'Transport/Start', category: 'Transport', name: 'Start', displayName: '', displayCategory: '', args: [] }] });
+  assert.equal(await runCmd(['find', 'start'], { call: t2.call, getCatalog: gc, out: t2.out }), 0);
+  assert.equal(t2.logs[0], 'Transport/Start');
+});

@@ -14,18 +14,26 @@ export function parseCmdArgs(argv) {
   const flags = {};
   const cmdArgs = {};
   let i = 0;
+  let error;
   while (i < rest.length && !rest[i].startsWith('--')) words.push(rest[i++]);
   while (i < rest.length) {
     const t = rest[i++];
     if (!t.startsWith('--')) { words.push(t); continue; }
-    const name = t.slice(2);
-    if (name === 'state' || name === 'json' || name === 'check') { flags[name] = true; continue; }
-    const hasValue = i < rest.length && !rest[i].startsWith('--');
-    const value = hasValue ? rest[i++] : true;
+    const eq = t.indexOf('=');
+    const name = eq < 0 ? t.slice(2) : t.slice(2, eq);
+    const inline = eq < 0 ? undefined : t.slice(eq + 1);
+    if (name === 'state' || name === 'json' || name === 'check') {
+      if (inline === undefined || inline === 'true' || inline === '1') flags[name] = true;
+      else if (inline === 'false' || inline === '0') flags[name] = false;
+      else error ??= `--${name} takes true/false/1/0, got "${inline}"`;
+      continue;
+    }
+    const hasValue = inline !== undefined || (i < rest.length && !rest[i].startsWith('--'));
+    const value = inline !== undefined ? inline : hasValue ? rest[i++] : true;
     if (name === 'limit') flags.limit = value;
     else cmdArgs[name] = value;
   }
-  return { sub, words, flags, cmdArgs };
+  return error ? { sub, words, flags, cmdArgs, error } : { sub, words, flags, cmdArgs };
 }
 
 function argLine(a) {
@@ -38,10 +46,11 @@ function argLine(a) {
 }
 
 export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = console } = {}) {
-  const { sub, words, flags, cmdArgs } = parseCmdArgs(argv);
+  const { sub, words, flags, cmdArgs, error } = parseCmdArgs(argv);
   if (sub === 'help') { out.log(CMD_USAGE); return 0; }
   const usage = (msg) => { if (msg) out.error(`error: ${msg}`); out.error(CMD_USAGE); return 2; };
   if (!['find', 'info', 'run', 'refresh'].includes(sub)) return usage(sub ? `unknown subcommand ${sub}` : null);
+  if (error) return usage(error);
   const opts = { getCatalog };
   const text = words.join(' ');
   const print = (r, lines) => { if (flags.json) out.log(JSON.stringify(r, null, 2)); else for (const l of lines) out.log(l); };
@@ -51,11 +60,11 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
       if (!text) return usage('find needs search words');
       let limit;
       if (flags.limit !== undefined) {
-        limit = Number(flags.limit);
+        limit = flags.limit === true ? NaN : Number(flags.limit);
         if (!Number.isInteger(limit) || limit < 1) return usage('--limit needs a positive number');
       }
       const r = await findCommand(call, { query: text, limit, with_state: !!flags.state }, opts);
-      print(r, r.results.map((x) => `${x.command} — ${x.displayName} — ${x.args}${x.enabled === undefined ? '' : x.enabled ? ' [enabled]' : ' [disabled]'}`));
+      print(r, r.results.map((x) => [x.command, x.displayName, x.args].filter(Boolean).join(' — ') + `${x.enabled === undefined ? '' : x.enabled ? ' [enabled]' : ' [disabled]'}`));
       if (r.note && !flags.json) out.log(r.note);
       return 0;
     }
