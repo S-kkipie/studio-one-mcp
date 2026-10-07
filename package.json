@@ -20,7 +20,9 @@
     "install-device": "node scripts/install-device.js",
     "test:live": "node --test --test-concurrency=1 test/live/*.test.js",
     "setup": "node src/cli.js setup",
-    "doctor": "node src/cli.js doctor"
+    "doctor": "node src/cli.js doctor",
+    "scan:setup": "node scripts/scan-setup.js",
+    "scan": "node src/plugins/scan.js"
   },
   "engines": {
     "node": ">=20"
