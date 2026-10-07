@@ -26,6 +26,7 @@ import { recordSetup } from './record.js';
 import { snapshot } from './snapshots.js';
 import { mixSnapshot } from './mixsnap.js';
 import { bounce } from './bounce.js';
+import { exportAudio } from './export/export.js';
 import { findCommand, commandInfo, runCommand } from './commands/tools.js';
 import { diffSongs } from './diff.js';
 import { gridBeats } from './grid.js';
@@ -774,6 +775,24 @@ server.tool(
   "Bounce all events on one track in the running Studio One: inPlace renders them into a single new event (with plug-ins), toNewTrack renders them onto a new track of the same name and mutes the originals. No dialogs; one live_undo reverts it, but the rendered .wav stays in the song's Bounces folder. Exporting a mixdown or stems is not offered: those open dialogs.",
   { track: z.string(), mode: z.enum(['inPlace', 'toNewTrack']).optional() },
   guard((a) => bounce(call, a)),
+);
+
+server.tool(
+  'live_export',
+  "Export the running song's mixdown or stems to audio files through Studio One's own export (offline render; the export dialog flashes briefly; Windows only). kind mixdown|stems; range loop (between the loop locators), song (song start/end markers) or markers (one file per marker range); formats from wav, aif, flac, caf, m4a, ogg, opus, mp3 (mixdown: one or more, all exported; stems: one). Options you leave out keep what the dialog last used, and your export settings are put back afterwards. Stems include the channels ticked in Studio One's stems dialog (all by default; Studio One remembers that per song). Sample rate and bit depth are the dialog's last choice for that format. Files land in the song's Mixdown/Stems folder (existing files are never overwritten: Studio One adds (2)), or are moved to output (a folder, or a file path for a single mixdown). Returns the file paths and sizes. The song must have been saved once.",
+  {
+    kind: z.enum(['mixdown', 'stems']),
+    range: z.enum(['loop', 'song', 'markers']).optional(),
+    formats: z.array(z.string()).optional(),
+    import_to_track: z.boolean().optional(),
+    skip_master_fx: z.boolean().optional(),
+    write_tempo: z.boolean().optional(),
+    split_mono: z.boolean().optional(),
+    realtime: z.boolean().optional(),
+    output: z.string().optional(),
+    timeout_s: z.number().min(10).max(3600).optional(),
+  },
+  guard((a) => exportAudio(call, a)),
 );
 
 server.tool(
