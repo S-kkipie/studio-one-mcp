@@ -33,10 +33,13 @@ export async function snapshot(call, { action, channel, slot, name, plugin }, { 
       }));
   }
   if (!name) throw new Error(`${action} needs name`);
-  const pluginName = await pluginAt(call, channel, slot);
+  // A second instance ("Fat Channel 2") shares its plug-in's snapshots.
+  const instance = await pluginAt(call, channel, slot);
+  const found = names(instance);
+  const pluginName = found.plugin ?? instance;
   const file = fileOf(dir, pluginName, name);
   if (action === 'save') {
-    const known = names(pluginName).names;
+    const known = found.names;
     if (!known.length) throw new Error(`no parameter names known for ${pluginName}`);
     const r = await call('pluginParams', { channel, slot, names: known });
     const params = Object.fromEntries(r.params.map((p) => [p.name, p.value]));

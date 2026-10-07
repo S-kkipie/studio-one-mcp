@@ -64,3 +64,12 @@ test('pluginParamNames: remote map first, then presets, deduplicated; strays and
   assert.deepEqual(pluginParamNames('Pro EQ', { roots: [root], maps: [map] }).names, ['lffreq', 'lfgain']);
   assert.deepEqual(pluginParamNames('Some VST', { roots: [root, join(root, 'missing')], maps: [map] }).names, []);
 });
+
+test('pluginParamNames: a second instance ("Pro EQ 2", e.g. after a preset load) resolves to its plug-in', () => {
+  const { root, map } = library();
+  const r = pluginParamNames('Pro EQ 2', { roots: [root], maps: [map] });
+  assert.deepEqual(r.names, ['lffreq', 'lfgain']);
+  assert.equal(r.plugin, 'Pro EQ');
+  assert.equal(pluginParamNames('Pro EQ', { roots: [root], maps: [map] }).plugin, 'Pro EQ');
+  assert.deepEqual(pluginParamNames('Some VST 2', { roots: [root], maps: [map] }).names, []);
+});

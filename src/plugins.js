@@ -91,9 +91,22 @@ export function remoteMap(file) {
 }
 
 // Every parameter name we can find for a plug-in (by the name live_inserts shows).
+// -> { names, sources, plugin } where plugin is the name the names were found under.
 // Presets are read from folders named after the plug-in (<root>/<vendor>/<name>),
 // at most `maxPresets` of them.
-export function pluginParamNames(pluginName, { roots = presetRoots(), maps = remoteMapFiles(), maxPresets = 8 } = {}) {
+export function pluginParamNames(pluginName, opts = {}) {
+  const found = namesOf(pluginName, opts);
+  // A second instance is named "Pro EQ 2" (Studio One numbers them; a preset load or a state write
+  // makes a new instance), and nothing is filed under that name: fall back to the plug-in's name.
+  const base = String(pluginName).replace(/\s+\d+$/, '');
+  if (!found.names.length && base !== pluginName) {
+    const again = namesOf(base, opts);
+    if (again.names.length) return { ...again, plugin: base };
+  }
+  return { ...found, plugin: pluginName };
+}
+
+function namesOf(pluginName, { roots = presetRoots(), maps = remoteMapFiles(), maxPresets = 8 } = {}) {
   const names = new Set();
   const sources = [];
   for (const f of maps) {

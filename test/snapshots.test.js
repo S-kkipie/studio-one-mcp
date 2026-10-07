@@ -41,3 +41,19 @@ test('restore needs a snapshot for that plug-in; save needs known names; slot mu
   await assert.rejects(snapshot(b.call, { action: 'save', channel: 'Vox', slot: 4, name: 'C' }, { dir, names }), /no plug-in in slot 4/);
   await assert.rejects(snapshot(b.call, { action: 'save', channel: 'Vox', slot: 0 }, { dir, names }), /needs name/);
 });
+
+test('a second instance ("Fat Channel 2") saves and restores under its plug-in name', async () => {
+  const b = bridge();
+  b.values['Gtr 2'] = { 'opt.compmodel': 1, 'comp.ratio': 100, 'comp.threshold': 10000 };
+  const call = async (op, a) => (op === 'inserts' && a.channel === 'Gtr 2'
+    ? [{ channel: a.channel, inserts: [{ slot: 0, name: 'Fat Channel 2' }] }]
+    : b.call(op, a));
+  const dir = mkdtempSync(join(tmpdir(), 's1snap-'));
+  const canon = (n) => ({ names: names().names, plugin: n.replace(/\s+\d+$/, '') });
+  await snapshot(call, { action: 'save', channel: 'Vox', slot: 0, name: 'Warm Vox' }, { dir, names: canon });
+  const r = await snapshot(call, { action: 'restore', channel: 'Gtr 2', slot: 0, name: 'Warm Vox' }, { dir, names: canon });
+  assert.equal(r.plugin, 'Fat Channel');
+  assert.equal(r.changed, 2);
+  const s = await snapshot(call, { action: 'save', channel: 'Gtr 2', slot: 0, name: 'Other' }, { dir, names: canon });
+  assert.equal(s.plugin, 'Fat Channel');
+});
