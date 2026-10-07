@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listChords, setChords, extractChords, partsFromChords, clearChords } from '../src/harmony.js';
 
-function bridge({ playing = false, recording = false, removed = [], chordsAfter, removeExecuted = true, extractExecuted = true, partsExecuted = true, trackTaskError, notes } = {}) {
+function bridge({ playing = false, recording = false, removed = [], chordsAfter, removeExecuted = true, extractExecuted = true, partsExecuted = true, trackTaskError, notes, noAdded = false } = {}) {
   const log = [];
   let added = false;
   let notesCalls = 0;
@@ -13,7 +13,7 @@ function bridge({ playing = false, recording = false, removed = [], chordsAfter,
       case 'song': return { transport: { playing, recording, position: { seconds: 0 } }, selectedTracks: ['Vox'] };
       case 'setTransport': return a.positionBars ? { position: { seconds: (parseInt(a.positionBars, 10) - 1) * 2 } } : {};
       case 'tracks': return added ? [{ name: 'Vox' }, { name: 'Pista 2' }] : [{ name: 'Vox' }];
-      case 'addTrack': added = true; return {};
+      case 'addTrack': added = true; return noAdded ? {} : { added: ['Pista 2'] };
       case 'selectEvents': case 'selectTrack': return {};
       case 'command':
         if (a.name === 'Remove Track') return { executed: removeExecuted };
@@ -101,10 +101,10 @@ test('extractChords returns the chord track', async () => {
 });
 
 test('partsFromChords returns only the new parts', async () => {
-  const old = { name: 'old', start: 0, end: 2, notes: [{ note: 60 }] };
-  const b = bridge({ notes: [[old], [old, { name: 'G', start: 4, end: 6, notes: [{ note: 55 }, { note: 59 }] }]] });
+  const old = { name: 'old', start: 0, end: 2, notes: [{ pitch: 60 }] };
+  const b = bridge({ notes: [[old], [old, { name: 'G', start: 4, end: 6, notes: [{ pitch: 55 }, { pitch: 59 }] }]] });
   const r = await partsFromChords(b.call, { track: 'Keys' });
-  assert.deepEqual(r.parts, [{ name: 'G', start: 4, end: 6, notes: [55, 59] }]);
+  assert.deepEqual(r.parts, [{ name: 'G', start: 4, end: 6, notes: ['G2', 'B2'] }]);
 });
 
 test('partsFromChords: executed:false gives the error', async () => {
@@ -121,4 +121,28 @@ test('clearChords converts bars and returns removed', async () => {
   const b = bridge({ removed: [{ name: 'G', start: 4, end: 6 }] });
   const r = await clearChords(b.call, { from: '3.1.1.0' });
   assert.equal(r.removed.length, 1);
+});
+
+test('setChords: scratch track comes from addTrack added, even if the tracks list does not show it', async () => {
+  const b = bridge({ chordsAfter: ['G'] });
+  const orig = b.call;
+  const r = await setChords(async (op, a) => (op === 'tracks' ? [{ name: 'Vox' }] : orig(op, a)), { bar: 3, progression: 'G' }, deps(b.log));
+  assert.equal(r.mismatches, undefined);
+});
+
+test('setChords: unidentifiable scratch track says to remove it by hand', async () => {
+  const b = bridge({ noAdded: true });
+  const orig = b.call;
+  await assert.rejects(setChords(async (op, a) => (op === 'tracks' ? [{ name: 'Vox' }] : orig(op, a)), { bar: 3, progression: 'G' }, deps(b.log)), /new track was added.*by hand/);
+});
+
+test('setChords: replace false adds a range note', async () => {
+  const b = bridge({ chordsAfter: ['G'] });
+  const r = await setChords(b.call, { bar: 3, progression: 'G', replace: false }, deps(b.log));
+  assert.match(r.rangeNote, /already in the range/);
+});
+
+test('setChords: failure after removeChords mentions the removed chords', async () => {
+  const b = bridge({ removed: [{ name: 'C', start: 4, end: 6 }] });
+  await assert.rejects(setChords(b.call, { bar: 3, progression: 'G' }, deps(b.log, { writeFails: true })), /boom; 1 chord.s. were already removed.*live_undo/);
 });

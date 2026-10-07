@@ -7,6 +7,7 @@ import { trackTask } from './tracks.js';
 import { toSeconds } from './time.js';
 import { createPart as realCreatePart, writeChords as realWriteChords } from './compose.js';
 import { parseProgression } from './theory/chords.js';
+import { noteName } from './theory/notes.js';
 
 const EPS = 0.001;
 
@@ -61,34 +62,46 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
     }
   }
 
-  const before = (await call('tracks', { events: false })).map((t) => t.name);
-  await call('addTrack', { type: 'instrument' });
-  undoSteps += 1;
-  const fresh = (await call('tracks', { events: false })).map((t) => t.name).filter((n) => !before.includes(n));
-  if (fresh.length !== 1) throw new Error('could not identify the scratch track');
-  const scratch = fresh[0];
-
-  try {
-    const part = await createPart(call, { track: scratch, bar, bars });
-    undoSteps += part?.undoSteps ?? 1;
-    await writeChords(call, { track: scratch, bar, progression, barsPerChord });
+  async function writeVia() {
+    const before = (await call('tracks', { events: false })).map((t) => t.name);
+    const addRes = await call('addTrack', { type: 'instrument' });
     undoSteps += 1;
-    await call('selectEvents', { tracks: [scratch] });
-    const r = await call('command', { category: 'Event', name: 'Extract to Chord Track' });
-    if (!r.executed) throw new Error('Event/Extract to Chord Track did not run');
-    undoSteps += 1;
-  } finally {
-    try {
-      await call('selectTrack', { name: scratch, exclusive: true });
-      const rr = await call('command', { category: 'Song', name: 'Remove Track' });
-      if (rr.executed) undoSteps += 1;
-      else warnings.push(`could not remove the scratch track "${scratch}": remove it by hand`);
-    } catch (e) {
-      warnings.push(`could not remove the scratch track "${scratch}" (${e.message}): remove it by hand`);
+    let fresh = Array.isArray(addRes?.added) ? addRes.added : null;
+    if (!fresh) fresh = (await call('tracks', { events: false })).map((t) => t.name).filter((n) => !before.includes(n));
+    if (fresh.length !== 1) {
+      throw new Error(`a new track was added but could not be identified as the scratch track${fresh.length ? ` (candidates: ${fresh.join(', ')})` : ''}: remove it by hand`);
     }
-    await restoreSelection(call, song0.selectedTracks);
+    const scratch = fresh[0];
+
+    try {
+      const part = await createPart(call, { track: scratch, bar, bars });
+      undoSteps += part?.undoSteps ?? 1;
+      await writeChords(call, { track: scratch, bar, progression, barsPerChord });
+      undoSteps += 1;
+      await call('selectEvents', { tracks: [scratch] });
+      const r = await call('command', { category: 'Event', name: 'Extract to Chord Track' });
+      if (!r.executed) throw new Error('Event/Extract to Chord Track did not run');
+      undoSteps += 1;
+    } finally {
+      try {
+        await call('selectTrack', { name: scratch, exclusive: true });
+        const rr = await call('command', { category: 'Song', name: 'Remove Track' });
+        if (rr.executed) undoSteps += 1;
+        else warnings.push(`could not remove the scratch track "${scratch}": remove it by hand`);
+      } catch (e) {
+        warnings.push(`could not remove the scratch track "${scratch}" (${e.message}): remove it by hand`);
+      }
+      await restoreSelection(call, song0.selectedTracks);
+    }
+
   }
 
+  try {
+    await writeVia();
+  } catch (e) {
+    if (removed.length) e.message += `; ${removed.length} chord(s) were already removed from the range (live_undo restores them)`;
+    throw e;
+  }
   const chords = (await listChords(call, { from, to })).chords;
   const mismatches = [];
   if (chords.length !== requested.length) mismatches.push({ requested: requested.length, got: chords.length });
@@ -101,6 +114,7 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
     ...(mismatches.length ? { mismatches } : {}),
     ...(warnings.length ? { warnings } : {}),
     undoSteps,
+    ...(replace ? {} : { rangeNote: 'replace was false: chords already in the range are part of the read-back, so count mismatches can come from them' }),
     note: 'several live_undo steps; easier: live_clear_chords for the range, or call again',
   };
 }
@@ -133,6 +147,6 @@ export async function partsFromChords(call, { track }) {
   if (!r.executed) throw new Error(`Studio One could not insert parts on ${track} (an instrument track is needed, and chords on the chord track)`);
   const after = (await call('notes', { track })).parts || [];
   const seen = new Set(before.map(partKey));
-  const parts = after.filter((p) => !seen.has(partKey(p))).map((p) => ({ name: p.name, start: p.start, end: p.end, notes: (p.notes || []).map((n) => n.note) }));
+  const parts = after.filter((p) => !seen.has(partKey(p))).map((p) => ({ name: p.name, start: p.start, end: p.end, notes: (p.notes || []).map((n) => n.note ?? (typeof n.pitch === 'number' ? noteName(n.pitch) : null)) }));
   return { track, parts };
 }
