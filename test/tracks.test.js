@@ -1,7 +1,7 @@
 // live_track_edit over a fake bridge.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trackEdit, toArgb, addBus } from '../src/tracks.js';
+import { trackEdit, toArgb, addBus, addInstrumentTrack, addPlugin } from '../src/tracks.js';
 
 function bridge() {
   const tracks = [
@@ -71,4 +71,29 @@ test('remove selects the track, removes it and keeps the rest of the selection',
   assert.equal(r.removed, 'Vox');
   assert.ok(!b.tracks.some((t) => t.name === 'Vox'));
   assert.deepEqual(b.selected(), ['Gtr']);
+});
+
+test('addInstrumentTrack: reports the new mixer channel (the instrument\'s, not the track name)', async () => {
+  // Live: track "MCP Modo Test" with MODO BASS gets mixer channel "MODO BASS"; live_inserts and
+  // live_add_plugin need that label.
+  let added = false;
+  const call = async (op, a) => {
+    if (op === 'inserts') return [{ channel: 'Mai Tai', inserts: [] }, ...(added ? [{ channel: 'MODO BASS', inserts: [] }] : []), { channel: 'Main', inserts: [] }];
+    if (op === 'trackTask') { added = true; return { results: [{ track: 'MCP Modo Test', instrument: 'MODO BASS', connected: true, channel: 'MCP Modo Test' }] }; }
+    throw new Error(`unexpected ${op}`);
+  };
+  const r = await addInstrumentTrack(call, { instrument: 'MODO BASS', name: 'MCP Modo Test' });
+  assert.equal(r.track, 'MCP Modo Test');
+  assert.equal(r.mixerChannel, 'MODO BASS');
+});
+
+test('addPlugin: an instrument name on an insert says to use live_add_instrument_track', async () => {
+  const call = async (op, a) => {
+    if (op === 'trackTask') return { results: [{ error: `no plug-in named ${a.ops[0].plugin} (live_plugins lists them)` }] };
+    if (op === 'plugins') return { plugins: a.kind === 'instrument' && a.filter === 'MODO BASS' ? ['MODO BASS'] : [] };
+    throw new Error(`unexpected ${op}`);
+  };
+  await assert.rejects(addPlugin(call, { channel: 'Bass', plugin: 'MODO BASS' }),
+    { message: 'MODO BASS is an instrument, not an insert effect: add it with live_add_instrument_track' });
+  await assert.rejects(addPlugin(call, { channel: 'Bass', plugin: 'Nope' }), { message: 'no plug-in named Nope (live_plugins lists them)' });
 });

@@ -496,7 +496,7 @@ server.tool(
 
 server.tool(
   'live_add_instrument_track',
-  'Add an instrument track in the running Studio One with a new instance of an instrument (by name, from live_plugins with kind "instrument", e.g. "Mai Tai", "Presence"), optionally named. One live_undo removes the track and the instrument.',
+  'Add an instrument track in the running Studio One with a new instance of an instrument (by name, from live_plugins with kind "instrument", e.g. "Mai Tai", "Presence"), optionally named. Returns mixerChannel: the mixer channel of the instrument, the name live_inserts, live_add_plugin and live_plugin_params take (not the track name). One live_undo removes the track and the instrument.',
   { instrument: z.string(), name: z.string().optional().describe('Track name (default: the instrument name)') },
   guard((a) => addInstrumentTrack(call, a)),
 );
@@ -629,7 +629,7 @@ server.tool(
 
 server.tool(
   'live_remove_plugin',
-  "Remove the plug-in in one insert slot of a channel (slot from live_inserts) in the running Studio One. Plug-in windows of that channel are closed first. Returns the channel's inserts afterwards; usually undone by one live_undo (check with live_inserts). Ask before removing when the user has not clearly asked for it.",
+  "Remove the plug-in in one insert slot of a channel (slot from live_inserts) in the running Studio One. Plug-in windows of that channel are closed first. Returns the channel's inserts afterwards; one live_undo brings the plug-in back with its settings. Ask before removing when the user has not clearly asked for it.",
   { channel: z.string(), slot: z.number().int() },
   guard((a) => removePlugin(call, a)),
 );

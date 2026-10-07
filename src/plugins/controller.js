@@ -57,7 +57,7 @@ export function opaqueMessage(name, { reason, entry } = {}) {
 async function insertAt(call, channel, slot) {
   const rack = (await call('inserts', { channel }))[0];
   const plug = rack && rack.inserts.find((i) => i.slot === slot);
-  if (!plug) throw new Error(`no plug-in in slot ${slot} on ${channel}`);
+  if (!plug) throw new Error(`no plug-in in slot ${slot} on ${channel} (live_inserts lists the slots; an instrument itself is not in a slot and its parameters cannot be reached here)`);
   return plug;
 }
 
@@ -258,7 +258,7 @@ export async function removePlugin(call, { channel, slot }, { closeWindows = clo
   const [rack] = await call('inserts', { channel });
   const after = rack ? rack.inserts : [];
   if (r.done !== true || after.length !== before - 1) throw new Error(`Studio One did not remove ${plug.name} from slot ${slot} of ${channel}`);
-  return { channel, removed: plug.name, slot, inserts: after, note: 'Usually undone by one live_undo (check with live_inserts).' };
+  return { channel, removed: plug.name, slot, inserts: after, note: 'One live_undo brings it back with its settings.' };
 }
 
 // (Re)scans the installed VST3 plug-ins into the catalog (only new or changed files are scanned).

@@ -136,16 +136,40 @@ export async function trackEdit(call, { track, action, name, color, to, folder, 
 
 // An instrument track with a new instance of an instrument (live_plugins with
 // kind instrument lists them). One undo step removes both (checked on 5.5.2).
+// The instrument's mixer channel (the label live_inserts and live_add_plugin take) is not the track's
+// channel label, so it is found as the one channel that is new after the add.
 export async function addInstrumentTrack(call, { instrument, name }) {
+  const labels = async () => (await call('inserts', {})).map((c) => c.channel);
+  const before = await labels().catch(() => null);
   const r = await trackTask(call, { op: 'addInstrumentTrack', instrument, name });
-  return { track: r.track, instrument: r.instrument, channel: r.channel, connected: r.connected, note: 'One live_undo removes the track and the instrument.' };
+  let mixerChannel = null;
+  if (before) {
+    const left = [...before];
+    const fresh = (await labels().catch(() => [])).filter((l) => {
+      const i = left.indexOf(l);
+      if (i < 0) return true;
+      left.splice(i, 1);
+      return false;
+    });
+    if (fresh.length === 1) mixerChannel = fresh[0];
+  }
+  return { track: r.track, instrument: r.instrument, channel: r.channel, mixerChannel, connected: r.connected, note: 'mixerChannel is the instrument\'s channel for live_inserts, live_add_plugin and live_plugin_params. One live_undo removes the track and the instrument.' };
 }
 
 // A plug-in on a channel's inserts, through DeviceEditFunctions like Studio One's
 // own Insert FX task: unlike the insert folder's own insertDeviceClass, this is
 // on the undo stack.
 export async function addPlugin(call, { channel, plugin }) {
-  const r = await trackTask(call, { op: 'addPlugin', channel, plugin });
+  let r;
+  try {
+    r = await trackTask(call, { op: 'addPlugin', channel, plugin });
+  } catch (e) {
+    // Only effects can go on inserts; an instrument name is not found among them.
+    if (!/^no plug-in named /.test(String(e.message))) throw e;
+    const inst = await call('plugins', { kind: 'instrument', filter: plugin }).catch(() => null);
+    if (inst?.plugins?.includes(plugin)) throw new Error(`${plugin} is an instrument, not an insert effect: add it with live_add_instrument_track`);
+    throw e;
+  }
   const [rack] = await call('inserts', { channel });
   return { channel, added: r.added, inserts: rack ? rack.inserts : null, note: 'One live_undo removes it.' };
 }

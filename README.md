@@ -42,7 +42,7 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_save`, `live_undo`, `live_redo` | Save (optionally as a new version), and undo or redo edits, with a step count. Check the result rather than counting undo steps: see [Undo](#undo). |
 | `live_plugins` / `live_add_plugin` | The installed plug-ins by name (PreSonus, VST and AU): effects, or instruments with `kind: "instrument"`. Add an effect to a channel's inserts by name, optionally with one of its presets; one undo removes it. |
 | `live_add_send` | Add an effect send: Studio One makes a new FX channel with the plug-in and a send to it (a reverb or delay send). Sending to an existing bus is not reachable from scripts, and this is not reliably undone. |
-| `live_add_instrument_track` | Add an instrument track with a new instance of an instrument by name (Mai Tai, Presence…). One undo removes both. |
+| `live_add_instrument_track` | Add an instrument track with a new instance of an instrument by name (Mai Tai, Presence…). The result's `mixerChannel` is the instrument's mixer channel, the name `live_inserts` and `live_add_plugin` take. One undo removes both. |
 | `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the selection; the result's `undoSteps` says how many `live_undo` steps remove it (the insert, plus one when the position or length had to be set). |
 | `live_write_notes` | Write notes (MIDI numbers or names like `C3`, middle C = C3) on an instrument track from a bar, making a part to cover them if there is none; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
 | `live_write_chords` | Write a chord progression like `Cm7 \| Ab \| Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
@@ -51,7 +51,7 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_sends` / `live_set_send` | Each channel's sends (destination name, level 0..1 and in dB, mute), and set a level or mute. |
 | `live_plugin_params` / `live_set_plugin_param` | Any plug-in's parameters with their values, and set one or a batch (`changes`). PreSonus plug-ins are read and set live (display text like `"2.0:1"`, range, normalised value). Scanned third-party plug-ins go through their saved state: not realtime, and the song is saved. Each result says its `backend` and whether it was `realtime`. See [Plug-ins](#plug-ins). |
 | `live_plugin_presets` | The presets Studio One has indexed for a plug-in (by slot or by name), and load one onto a slot. Works for every plug-in, including ones that hide their parameters. |
-| `live_remove_plugin` | Remove the plug-in in one insert slot. |
+| `live_remove_plugin` | Remove the plug-in in one insert slot. One undo brings it back with its settings. |
 | `live_plugin_window` | Open a slot's plug-in window, or close all plug-in windows (Windows only). |
 | `live_plugin_scan` / `plugin_catalog` | Scan the installed VST3 plug-ins into the plug-in catalog (only new or changed ones), and search it offline. |
 | `live_mix_snapshot` | Save the whole mix under a name (every channel's volume, pan, mute, solo, monitoring and send levels, per song), restore it later, or list them. Restore sets only what differs. Record-arm and automation mode are not included. |
@@ -108,9 +108,10 @@ This takes a few seconds per change, about 3 to 4 s here. With a large preset li
 - Edits made in the plug-in's window while a change runs are lost.
 - The instance name can alternate between "Name" and "Name 2".
 - The change is not one `live_undo` step. To go back, set the old values.
+- Values are numbers in the plug-in's own units, or on/off. A choice such as an amp type is a number (the one `live_plugin_params` shows); text such as "Clean" is refused, because the plug-in would read it as some arbitrary number.
 - Parameter automation of a third-party plug-in is not covered.
 
-**Presets** work for every plug-in, opaque ones included. `live_plugin_presets` lists the presets Studio One has indexed for a plug-in, and `load` puts one onto a slot through the same replace-slot steps. `live_add_plugin` takes a `preset`. Class IDs come from Studio One's own plug-in list (`Plugins-<language>.settings` in the profile's `x64` folder), so listing does not save the song.
+**Presets** work for every plug-in, opaque ones included. `live_plugin_presets` lists the presets Studio One has indexed for a plug-in, and `load` puts one onto a slot through the same replace-slot steps. `live_add_plugin` takes a `preset`. Class IDs come from Studio One's own plug-in list (`Plugins-<language>.settings` in the profile's `x64` folder), so listing does not save the song. Only insert slots can be controlled: an instrument on an instrument track (e.g. MODO BASS) has no slot, so its parameters and presets cannot be set from here; `live_plugin_presets` with `plugin` still lists its indexed presets (none, for plug-ins that keep presets in their own browser).
 
 **Windows.** Studio One refuses track edits while a plug-in window is open or focused. When a track edit is refused for that reason, studio-one-mcp closes the plug-in windows once (Windows only, through a short PowerShell helper that closes only windows titled `<channel> · Inserts · …`) and tries again. `live_plugin_window` opens a slot's window or closes them all.
 

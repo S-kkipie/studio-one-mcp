@@ -107,7 +107,7 @@ test('getParams: native keeps its output shape plus backend and realtime; opaque
   assert.equal(o.backend, 'opaque');
   assert.deepEqual(o.params, []);
   assert.match(o.note, /live_plugin_presets/);
-  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover, pluginClass }), /no plug-in in slot 3 on Voc/);
+  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover, pluginClass }), /no plug-in in slot 3 on Voc \(live_inserts lists the slots; an instrument itself is not in a slot/);
 });
 
 test('setParams native: one change keeps the bridge shape, a batch returns results', async () => {
