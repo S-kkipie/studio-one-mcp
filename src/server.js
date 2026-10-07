@@ -477,14 +477,14 @@ const PITCH = z.union([z.number().int(), z.string()]).describe('MIDI number or a
 
 server.tool(
   'live_create_part',
-  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The track selection is put back. One live_undo removes it.',
+  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The track selection is put back. Two live_undo steps remove it (the position and length, then the insert).',
   { track: z.string(), bar: z.number().int().describe('1-based bar'), bars: z.number().int().optional().describe('Default 1') },
   guard((a) => createPart(call, a)),
 );
 
 server.tool(
   'live_write_notes',
-  'Write notes on an instrument track in the running Studio One, starting at bar `bar` (beats relative to that bar, quarter notes, 4/4). Makes a part covering the notes if there is none (create_part: false to refuse); write into an empty area or a part that covers the whole range. Works on new, empty parts. Pitches as MIDI numbers or names (middle C = C3). One live_undo per call. Read back with live_notes.',
+  'Write notes on an instrument track in the running Studio One, starting at bar `bar` (beats relative to that bar, quarter notes, 4/4). Makes a part covering the notes if there is none (create_part: false to refuse); write into an empty area or a part that covers the whole range. Works on new, empty parts. Pitches as MIDI numbers or names (middle C = C3). Undo with live_undo (check with live_notes); a part it created takes two more steps to remove. Read back with live_notes.',
   {
     track: z.string(),
     bar: z.number().int(),
