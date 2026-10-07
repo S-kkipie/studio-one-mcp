@@ -220,7 +220,13 @@ class Bridge {
             const c = it.next();
             if (!c) break;
             const entry = { category: String(c.category), name: String(c.name) };
-            if (filter && (entry.category + " " + entry.name).toLowerCase().indexOf(filter) < 0) continue;
+            if (args.detail) {
+                entry.displayCategory = c.displayCategory ? String(c.displayCategory) : "";
+                entry.displayName = c.displayName ? String(c.displayName) : "";
+                entry.classID = c.classID ? String(c.classID) : "";
+                entry.arguments = c.arguments ? String(c.arguments) : "";
+            }
+            if (filter && (entry.category + " " + entry.name + " " + (entry.displayName || "")).toLowerCase().indexOf(filter) < 0) continue;
             if (args.withState) entry.enabled = !!Host.GUI.Commands.interpretCommand(entry.category, entry.name, true);
             out.push(entry);
         }

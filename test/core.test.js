@@ -9,8 +9,8 @@ const COMMANDS = [
   { category: 'Edit', name: 'Delete', enabled: false },
 ];
 
-function setup({ allowEval = false } = {}) {
-  const host = fakeHost({ commands: COMMANDS });
+function setup({ allowEval = false, commands = COMMANDS } = {}) {
+  const host = fakeHost({ commands });
   const { get } = loadCore({ host, config: { mailbox: MAILBOX, allowEval } });
   const Bridge = get('Bridge');
   const bridge = new Bridge({ mailbox: MAILBOX, allowEval }, null);
@@ -111,6 +111,20 @@ test('listCommands: all, filtered, and with enabled state', () => {
   assert.equal(ask('listCommands').result.length, 3);
   assert.deepEqual(ask('listCommands', { filter: 'transport' }).result.map((c) => c.name), ['Start', 'Stop']);
   assert.deepEqual(ask('listCommands', { filter: 'delete', withState: true }).result, [{ category: 'Edit', name: 'Delete', enabled: false }]);
+});
+
+test('listCommands detail: display names, class IDs and declared arguments', () => {
+  const commands = [
+    ...COMMANDS,
+    { category: 'Edit', name: 'Transpose', enabled: true, displayCategory: 'Editar', displayName: 'Transponer', classID: '{X}', arguments: 'Semitones:int' },
+  ];
+  const { ask } = setup({ commands });
+  const found = ask('listCommands', { detail: true, filter: 'transponer' }).result;
+  assert.deepEqual(found, [{ category: 'Edit', name: 'Transpose', displayCategory: 'Editar', displayName: 'Transponer', classID: '{X}', arguments: 'Semitones:int' }]);
+  const bare = ask('listCommands', { detail: true, filter: 'start' }).result;
+  assert.deepEqual(bare, [{ category: 'Transport', name: 'Start', displayCategory: '', displayName: '', classID: '', arguments: '' }]);
+  assert.deepEqual(ask('listCommands', { filter: 'transponer' }).result, []);
+  assert.deepEqual(Object.keys(ask('listCommands', { filter: 'transpose' }).result[0]), ['category', 'name']);
 });
 
 test('eval is refused unless allowEval', () => {
