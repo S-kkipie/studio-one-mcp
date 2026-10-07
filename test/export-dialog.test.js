@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { EXPORT_SCRIPT, windowsSnapshot, driveExportDialog } from '../src/export/dialog.js';
+import { EXPORT_SCRIPT, windowsSnapshot, driveExportDialog, cancelExportDialogs } from '../src/export/dialog.js';
 
 const script = readFileSync(EXPORT_SCRIPT, 'utf8').replace(/\r\n/g, '\n');
 
@@ -53,4 +53,30 @@ test('final result ignores snapshot lines; aborted run', async () => {
 
 test('script has the two-phase wait', () => {
   assert.ok(script.includes('dialog did not accept OK') && script.includes('5000'));
+});
+
+test('drive and cancel only touch modal dialogs (owner disabled)', () => {
+  assert.ok(script.includes('IsWindowEnabled') && script.includes('Modal('));
+  assert.match(script, /function IsExportDialog\(\$h\) \{[^}]*Modal\(\$h\)/);
+  assert.ok(script.includes("$mode -eq 'cancel'"));
+  const cancel = script.slice(script.indexOf("if ($mode -eq 'cancel') {"), script.indexOf('# 1. Wait for the export dialog'));
+  assert.doesNotMatch(cancel, /VK_RETURN/);
+  assert.match(cancel, /VK_ESCAPE/);
+});
+
+test('cancelExportDialogs passes env and the signal, collects cancelled titles', async () => {
+  let seen;
+  const ac = new AbortController();
+  const run = async (cmd, args, opts) => {
+    seen = opts;
+    return { stdout: '{"event":"cancelled","hwnd":"C","title":"Exportar mezcla"}\n', aborted: true };
+  };
+  const r = await cancelExportDialogs({ pid: 9, before: ['A'], timeoutMs: 20000, signal: ac.signal }, { run, platform: 'win32' });
+  assert.deepEqual(r, { cancelled: ['Exportar mezcla'] });
+  assert.equal(seen.env.S1MCP_XD_MODE, 'cancel');
+  assert.equal(seen.env.S1MCP_XD_PID, '9');
+  assert.equal(seen.env.S1MCP_XD_BEFORE, 'A');
+  assert.equal(seen.env.S1MCP_XD_TIMEOUT_MS, '20000');
+  assert.equal(seen.signal, ac.signal);
+  await assert.rejects(cancelExportDialogs({ pid: 9 }, { platform: 'linux' }), /Windows only/);
 });

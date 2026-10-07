@@ -239,7 +239,10 @@ class Bridge {
         const selected = [current];
         if (kind === "mixdown") for (const e of entries) { if (Number(s.codec.getAttribute(e).getAttribute("selected")) === 1 && selected.indexOf(e) < 0) selected.push(e); }
         const available = [current].concat(entries.filter(e => e !== current));
-        return { kind: kind, range: Number(s.renderer.getAttribute("renderRange")), current: current, selected: selected, available: available, options: options };
+        // pending: settings applied by an export are still waiting for their restore (e.g. the MCP
+        // server died mid-export); restore puts the user's own settings back.
+        const pending = !!(this.exportSnapshots && this.exportSnapshots[kind]);
+        return { kind: kind, range: Number(s.renderer.getAttribute("renderRange")), current: current, selected: selected, available: available, options: options, pending: pending };
     }
 
     exportSettings(args) {

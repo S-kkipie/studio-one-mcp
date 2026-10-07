@@ -160,3 +160,14 @@ test('restore removes selected flags that were absent', () => {
   result(exp({ kind: 'mixdown', action: 'restore' }));
   assert.equal(codec.getAttribute('flac').getAttribute('selected'), undefined);
 });
+
+test('get reports pending while an applied export waits for its restore', () => {
+  const { exp } = setup();
+  assert.equal(result(exp({ kind: 'mixdown', action: 'get' })).pending, false);
+  assert.equal(result(exp({ kind: 'mixdown', action: 'apply', range: 1 })).pending, true);
+  assert.equal(result(exp({ kind: 'mixdown', action: 'get' })).pending, true);
+  assert.equal(result(exp({ kind: 'stems', action: 'get' })).pending, false);
+  const back = result(exp({ kind: 'mixdown', action: 'restore' }));
+  assert.equal(back.settings.pending, false);
+  assert.equal(result(exp({ kind: 'mixdown', action: 'get' })).pending, false);
+});

@@ -51,3 +51,14 @@ export async function driveExportDialog({ pid, before = [], timeoutMs = 15000, w
   const dialog = d ? { hwnd: d.hwnd, title: d.title } : undefined;
   return { ...final, ...(dialog ? { dialog } : {}) };
 }
+
+// Late cancel watch: for up to timeoutMs (or until `signal` aborts) presses Escape (never Enter) on
+// every NEW modal export dialog of `pid`, as driveExportDialog would pick it.
+// -> { cancelled: [titles] }
+export async function cancelExportDialogs({ pid, before = [], timeoutMs = 20000, signal } = {}, { run = runScript, platform = process.platform } = {}) {
+  if (platform !== 'win32') throw notWindows();
+  const env = { S1MCP_XD_MODE: 'cancel', S1MCP_XD_PID: String(pid), S1MCP_XD_BEFORE: before.join(','), S1MCP_XD_TIMEOUT_MS: String(timeoutMs) };
+  const r = await run('powershell.exe', PS_ARGS, { env: { ...process.env, ...env }, timeout: timeoutMs + 10000, ...(signal ? { signal } : {}) });
+  const stdout = typeof r === 'string' ? r : r.stdout;
+  return { cancelled: parseLines(stdout).events.filter((e) => e.event === 'cancelled').map((e) => e.title) };
+}
