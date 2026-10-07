@@ -3,8 +3,10 @@
 //  - native: PreSonus plug-ins. Studio One's findParameter answers their internal names (found in
 //    their presets and the remote-control map); realtime.
 //  - state: third-party plug-ins whose saved state the scanner could map (catalog stateRoundTrip, or
-//    xmlState with mapped attributes). Reads save the song and read the slot's state from it; writes
-//    replace the slot with a new instance made from the edited state (a few seconds, not realtime).
+//    xmlState with mapped attributes). On Windows reads export the state in place (Export Preset)
+//    and writes load the edited state in place (Load Preset File): no song save, same instance
+//    (state.js). Elsewhere reads save the song and read the slot's state from it, and writes
+//    replace the slot with a new instance made from the edited state. Not realtime either way.
 //    Values are in the parameter's display units; the scan's stateScale converts them to and from
 //    the state (Archetype keeps 0..1 for a 0..100 %), and keys it could not verify are read-only.
 //  - opaque: everything else (no host parameters, no editable state, scan errors, not scanned):
@@ -23,9 +25,10 @@ import { listPresets, insertPreset, addPlugin, slotCommand, INSTANCE_TIMEOUT_MS 
 
 const SCAN_HINT = 'run live_plugin_scan (it needs `npm run scan:setup` once)';
 
-// One session-changing plug-in operation at a time (state writes and the song saves of state reads,
-// preset loads, removes, adds, scans): two of them interleaved could save, insert and remove over
-// each other's instances.
+// One session-changing plug-in operation at a time (state reads and writes, preset loads, removes,
+// adds, scans): two of them interleaved could save, insert, remove or load over each other's
+// instances. Not reentrant: nothing that runs inside it may call another serialized() entry point.
+// The preset file dialog has its own lock (presetio.js withDialogLock), taken inside this one.
 let sessionQueue = Promise.resolve();
 export function serialized(fn) {
   const run = sessionQueue.then(fn, fn);
@@ -97,7 +100,7 @@ const matches = (filter, ...texts) => !filter || texts.some((t) => String(t ?? '
 /**
  * Parameters of the plug-in in `slot` of `channel`, with values.
  * native -> { channel, slot, plugin, backend, realtime: true, params: [{ name, value, text, min, max, normalized }] }
- * state  -> { channel, slot, plugin, backend, realtime: false, source: 'song-save', saved, params: [{ name, key, value, label, min, max }] }
+ * state  -> { channel, slot, plugin, backend, realtime: false, source: 'export' (Windows) | 'song-save' (+ saved), params: [{ name, key, value, label, min, max }] }
  * opaque -> { channel, slot, plugin, backend, realtime: false, params: [], note }
  */
 export async function getParams(call, { channel, slot, filter, params }, deps) {
@@ -119,7 +122,8 @@ export async function getParams(call, { channel, slot, filter, params }, deps) {
   const entry = b.entry;
   const keys = entry.stateKeys || {};
   const wanted = (entry.params || []).filter((p) => matches(filter, p.name, p.key));
-  // The read saves the song: it waits for any other session-changing plug-in operation.
+  // The read opens a preset dialog (or, off Windows, saves the song): it waits for any other
+  // session-changing plug-in operation.
   const st = await serialized(() => d.readState(call, { channel, slot }));
   const out = { ...head, realtime: false, source: st.source, saved: st.saved, params: [] };
   const desc = (p) => ({ name: p.name, key: p.key, label: p.label || undefined, min: p.min, max: p.max, ...(p.choices && p.type === 'choice' ? { choices: p.choices } : {}) });

@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import {
   backendFor, pickBackend, opaqueMessage, getParams, setParams, stateChange, pluginPresets, addPluginWithPreset, removePlugin, runScan,
 } from '../src/plugins/controller.js';
-import { replaceSlot, writePluginParams } from '../src/plugins/state.js';
+import { replaceSlot, writePluginParams, readPluginState } from '../src/plugins/state.js';
+import { exportState, loadState } from '../src/plugins/presetio.js';
 import { buildVstPreset, writeJuceXml, parseVstPreset, readJuceXml } from '../src/plugins/vstpreset.js';
 import { trackTask } from '../src/tracks.js';
 import { parsePluginCache, classIdFor } from '../src/plugins/classes.js';
@@ -376,6 +377,7 @@ test('Archetype Petrucci X (real saved state + real scan): % values read and wri
     return call(op, args);
   };
   const writeParams = (c, a) => writePluginParams(c, a, {
+    platform: 'linux', // the song-save + replace fallback
     readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', classId: 'ABCDEF019182FAEB4E4453504E4A5058', xml, raw: preset, source: 'song-save' }),
     closeWindows: async () => [],
     presetsRoot,
@@ -470,4 +472,46 @@ test('runScan: tells how to set up Python when the venv is missing; summarises b
   assert.deepEqual(r.scannedNow, [{ name: 'Archetype Petrucci X', backend: 'state' }]);
   assert.equal(r.total, 3);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('setParams / getParams state on Windows: the real presetio flow runs inside the session queue without deadlock, no save', async () => {
+  let current = buildVstPreset({ classId: 'ABCDEF019182FAEB4E4453504E4A5058', chunks: [{ id: 'Comp', data: writeJuceXml('<appModel inputGain="0" gateActive="true"/>') }] });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 's1ctl-'));
+  const presetOps = [];
+  const { call, log } = fakeBridge({ Gtr: ['Archetype Petrucci X'] }, {
+    presetCommand: (a) => { presetOps.push(a.command); return { ok: true, ran: 1 }; },
+  });
+  // Stand-ins for the dialog scripts: "export" writes the plug-in's state to the typed path, "load" reads it in.
+  const dialog = {
+    tmpDir,
+    snapshot: async () => ({ pid: 1, exclude: [] }),
+    cancelWatch: async () => ({ cancelled: [] }),
+    fill: async ({ path: p, expect }) => {
+      if (expect === 'export') fs.writeFileSync(p + '.vstpreset', current);
+      else current = fs.readFileSync(p);
+      return { ok: true };
+    },
+  };
+  const io = { exportState: (c, t) => exportState(c, t, dialog), loadState: (c, t, b, e) => loadState(c, t, b, e, dialog) };
+  const writeParams = (c, a) => writePluginParams(c, a, { platform: 'win32', io });
+  const readState = (c, t) => readPluginState(c, t, { platform: 'win32', io });
+  const deps = { catalog, discover, pluginClass, writeParams, readState };
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('deadlock')), 5000));
+  const [w1, r1, w2] = await Promise.race([Promise.all([
+    setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Input Gain': '5 dB' } }, deps),
+    getParams(call, { channel: 'Gtr', slot: 0, filter: 'input' }, deps),
+    setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 0 } }, deps),
+  ]), timeout]);
+  assert.equal(w1.inPlace, true);
+  assert.deepEqual(w1.applied, { 'Input Gain': 5 });
+  assert.equal(w1.unconfirmed, undefined);
+  assert.equal(r1.source, 'export');
+  // getParams queues after its rack lookup, so it runs after the second write.
+  assert.deepEqual(r1.params.map((p) => [p.key, p.value]), [['input_gain', 0]]);
+  assert.equal(w2.inPlace, true);
+  assert.match(readJuceXml(parseVstPreset(current).chunks[0].data), /inputGain="0"/);
+  assert.deepEqual(presetOps, ['Export Preset', 'Load Preset File', 'Export Preset', 'Export Preset', 'Load Preset File', 'Export Preset', 'Export Preset']);
+  assert.ok(!log.some(([op]) => ['save', 'trackTask', 'command'].includes(op)), 'no song save, no insert/remove, no re-index');
+  assert.deepEqual(fs.readdirSync(tmpDir), [], 'temp presets deleted');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 });

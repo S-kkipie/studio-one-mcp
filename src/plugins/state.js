@@ -1,16 +1,25 @@
-// State backend: a third-party plug-in's parameters are edited in its saved state and the edited
-// state is loaded back by replacing the slot with a new instance made from a temporary preset.
+// State backend: a third-party plug-in's parameters are edited in its saved state.
 //
-// Reading: Studio One keeps each insert's state in the song file
+// Windows (in place): the state comes out through the plug-in's own Presets/Export Preset and goes
+// back through Presets/Load Preset File (presetio.js, a file dialog filled by script). The instance,
+// its slot, its channel and its bypass stay as they are, and the song is never saved. An instrument
+// exports an .instrument bundle (the synth's preset plus its channel's insert presets and channel
+// data); loading such a bundle rebuilds the channel's whole insert chain (live, 7.2.3: the inserts
+// are recreated from the bundle, or removed when their parts are left out), so an instrument is
+// written back as a synth-only .preset, which leaves the inserts and the channel alone.
+//
+// Elsewhere (fallback): Studio One keeps each insert's state in the song file
 // (Presets/Channels/<channel>/<n> - <name>.vstpreset), so a read saves the song (File/Save) and
-// unzips it. Presets/Update Preset was tried as a no-save read path on 7.2.3 and rejected: it opens
-// a modal "Save preset" dialog, which blocks the bridge.
+// unzips it, and a write replaces the slot with a new instance made from a temporary preset.
+// Presets/Update Preset was tried as a no-save read path on 7.2.3 and rejected: it opens a modal
+// "Save preset" dialog, which blocks the bridge.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { zipSync, unzipSync, strFromU8, strToU8 } from 'fflate';
 import { openSongArchive } from '../song.js';
 import { kids, byXid, walk } from '../xml.js';
 import { listPresets, insertPreset, slotCommand, INSTANCE_TIMEOUT_MS } from '../tracks.js';
@@ -18,6 +27,7 @@ import { parseVstPreset, buildVstPreset, readJuceXml, writeJuceXml, setXmlAttrs,
 import { findParam, matchPlugin, stateScaleOf, displayToState, unverifiedMessage, normalizedRefused } from './catalog.js';
 import { closePluginWindows } from './windows.js';
 import { REPO_ROOT, defaultPython } from './scan.js';
+import * as presetio from './presetio.js';
 
 export const APPLY_STATE_SCRIPT = path.join(REPO_ROOT, 'scripts', 'apply-state.py');
 export const SCRATCH_FOLDER = 'studio-one-mcp';
@@ -65,8 +75,102 @@ async function slotInfo(call, channel, slot) {
   return hit;
 }
 
-// -> { channel, slot, plugin, classId, cid, xml | null, raw, presetPath, source: 'song-save' }
-export async function readPluginState(call, { channel, slot }, { openArchive = openSongArchive } = {}) {
+const isInstrument = (target) => target != null && target.instrument != null;
+const targetFields = (target) => (isInstrument(target) ? { instrument: target.instrument } : { channel: target.channel, slot: target.slot });
+const reEsc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const metaAttr = (xml, id) => {
+  const m = new RegExp(`<Attribute id="${reEsc(id)}" value="([^"]*)"`).exec(xml || '');
+  return m ? m[1] : null;
+};
+
+// The PresetPart of presetparts.xml that is the synth itself (AudioSynth:IsMainPreset), as text.
+function mainPart(parts) {
+  const all = String(parts || '').match(/<PresetPart>[\s\S]*?<\/PresetPart>/g) || [];
+  return all.find((p) => metaAttr(p, 'AudioSynth:IsMainPreset') === '1') || all.find((p) => !/Inserts:/.test(p)) || null;
+}
+
+/**
+ * An exported preset file -> the plug-in's VST3 state inside it, and what packExport needs.
+ *  .vstpreset: the state itself.
+ *  .preset: PreSonus container (metainfo.xml + the data file it names); the data file is replaced.
+ *  .instrument: bundle; only the synth part (presetparts.xml, AudioSynth:IsMainPreset) is used, and
+ *    it is packed back as a synth-only .preset, never as an .instrument (see the top of this file).
+ * -> { raw (vstpreset bytes), plugin (name or null), container }
+ */
+export function unpackExport(ext, buf) {
+  const e = String(ext || '').toLowerCase();
+  if (e === '.vstpreset') return { raw: Buffer.from(buf), plugin: null, container: { kind: 'vstpreset' } };
+  if (e !== '.preset' && e !== '.instrument') throw new Error(`unexpected exported preset type ${ext}`);
+  const zip = unzipSync(new Uint8Array(buf));
+  const meta = zip['metainfo.xml'] ? strFromU8(zip['metainfo.xml']) : '';
+  let dataFile;
+  let mime = null;
+  let plugin = metaAttr(meta, 'Class:Name');
+  if (e === '.preset') {
+    dataFile = metaAttr(meta, 'Preset:DataFile') || Object.keys(zip).find((n) => /^data\./.test(n));
+  } else {
+    const part = mainPart(zip['presetparts.xml'] ? strFromU8(zip['presetparts.xml']) : '');
+    if (!part) throw new Error('the exported instrument has no synth part (presetparts.xml)');
+    dataFile = metaAttr(part, 'Preset:DataFile');
+    mime = metaAttr(part, 'Preset:DataMimeType');
+    plugin = metaAttr(part, 'Class:Name') || plugin;
+  }
+  if (!dataFile || !zip[dataFile]) throw new Error(`the exported ${e} has no state file${dataFile ? ` (${dataFile})` : ''}`);
+  if (!/\.vstpreset$/i.test(dataFile)) {
+    throw new Error(`${plugin || 'this plug-in'} keeps its state as ${path.extname(dataFile)}, not as a VST3 state: its parameters are set natively, not through the state`);
+  }
+  return { raw: Buffer.from(zip[dataFile]), plugin, container: { kind: e.slice(1), zip, meta, dataFile, mime } };
+}
+
+// The inverse of unpackExport, for an edited state. -> { ext, buf }
+export function packExport(container, raw) {
+  if (container.kind === 'vstpreset') return { ext: '.vstpreset', buf: Buffer.from(raw) };
+  if (container.kind === 'preset') {
+    return { ext: '.preset', buf: Buffer.from(zipSync({ ...container.zip, [container.dataFile]: new Uint8Array(raw) })) };
+  }
+  // .instrument -> synth-only .preset: the instrument's metainfo, re-typed as a preset naming its data file
+  // (the shape of Studio One's own instrument presets, e.g. Mai Tai's "+ init.preset").
+  const data = 'data' + path.extname(container.dataFile).toLowerCase();
+  const mime = /\.vstpreset$/.test(data) ? 'application/x-steinberg-vstpreset' : String(container.mime || '').replace(/\+xml$/, '');
+  let meta = container.meta || '<?xml version="1.0" encoding="UTF-8"?>\n<MetaInformation>\n</MetaInformation>';
+  meta = meta.replace(/\s*<Attribute id="(?:Preset:DataFile|Preset:DataMimeType|Document:MimeType)" value="[^"]*"\/>/g, '');
+  meta = meta.replace('</MetaInformation>',
+    `\t<Attribute id="Document:MimeType" value="application/x-presonus-preset"/>\n\t<Attribute id="Preset:DataFile" value="${data}"/>\n\t<Attribute id="Preset:DataMimeType" value="${mime}"/>\n</MetaInformation>`);
+  return { ext: '.preset', buf: Buffer.from(zipSync({ [data]: new Uint8Array(raw), 'metainfo.xml': strToU8(meta) })) };
+}
+
+function stateOf(raw) {
+  const p = parseVstPreset(raw);
+  const comp = p.chunks.find((c) => c.id === 'Comp');
+  return { classId: p.classId, cid: braceClassId(p.classId), xml: comp ? readJuceXml(comp.data) : null };
+}
+
+// presetio's export/load, looked up at call time (presetio imports controller.js, which imports this file).
+const defaultIo = { exportState: (...a) => presetio.exportState(...a), loadState: (...a) => presetio.loadState(...a) };
+
+/**
+ * The plug-in's current state. `target` is { channel, slot } (an insert) or { instrument } (name or InstNN).
+ * Windows -> { ...target, plugin, classId, cid, xml | null, raw, container, source: 'export' }: exported
+ *   in place, no song save.
+ * Elsewhere -> { channel, slot, plugin, classId, cid, xml | null, raw, presetPath, source: 'song-save', saved }.
+ */
+export async function readPluginState(call, target, opts = {}) {
+  const { platform = process.platform, io = defaultIo } = opts;
+  if (platform !== 'win32') {
+    if (isInstrument(target)) throw new Error("an instrument's state can only be read on Windows (through its Export Preset dialog)");
+    return readFromSong(call, target, opts);
+  }
+  // An insert: the slot must hold a plug-in (its name also makes a wrong-class error readable).
+  const ins = isInstrument(target) ? null : await slotInfo(call, target.channel, target.slot);
+  const { ext, buf } = await io.exportState(call, target);
+  const u = unpackExport(ext, buf);
+  return {
+    ...targetFields(target), plugin: ins ? ins.name : (u.plugin || String(target.instrument)),
+    ...stateOf(u.raw), raw: u.raw, container: u.container, source: 'export',
+  };
+}
+
+async function readFromSong(call, { channel, slot }, { openArchive = openSongArchive } = {}) {
   const ins = await slotInfo(call, channel, slot);
   // Only ever File/Save an existing .song: on an untitled song it would open Save As.
   const { fileUrl } = await call('song');
@@ -149,12 +253,17 @@ async function editState(state, entry, changes, runPython) {
       byAttr[r.stateKey] = [k, v];
     }
     const out = setXmlAttrs(state.xml, attrs);
+    // change key -> [state attribute, text written], for the check after an in-place load.
+    const written = {};
     for (const a of Object.keys(attrs)) {
       if (out.missing.includes(a)) missing.push(byAttr[a][0]);
-      else applied[byAttr[a][0]] = byAttr[a][1];
+      else {
+        applied[byAttr[a][0]] = byAttr[a][1];
+        written[byAttr[a][0]] = [a, String(attrs[a])];
+      }
     }
     const chunks = comp.map((c) => (c.id === 'Comp' ? { id: 'Comp', data: writeJuceXml(out.xml) } : c));
-    return { applied, missing, chunks };
+    return { applied, missing, chunks, written };
   }
   if (caps.stateRoundTrip) {
     const keyed = {};
@@ -285,13 +394,82 @@ function cleanup(file, scratchDir, created) {
   }
 }
 
+// A value read back after a load equals the text written (numbers within float32 rounding).
+function sameStateValue(written, read) {
+  if (written === read) return true;
+  if (read == null) return false;
+  const num = (t) => (t === 'true' ? 1 : t === 'false' ? 0 : String(t).trim() === '' ? NaN : Number(t));
+  const a = num(written);
+  const b = num(read);
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(a), Math.abs(b));
+}
+
+function checkClass(entry, state, target) {
+  const ok = entry.classId ? braceClassId(entry.classId) === braceClassId(state.classId) : matchPlugin(new Map([[entry.name, entry]]), state.plugin) === entry;
+  if (ok) return;
+  const where = isInstrument(target) ? `instrument ${target.instrument}` : `slot ${target.slot} of ${target.channel}`;
+  throw new Error(`${where} holds ${state.plugin}, not ${entry.name}; nothing changed`);
+}
+
+function checkEntry(entry, changes) {
+  if (!entry) throw new Error('no catalog entry for this plug-in (run live_plugin_scan)');
+  const caps = entry.capabilities || {};
+  if (!caps.xmlState && !caps.stateRoundTrip) throw new Error(`${entry.name} has no editable state (catalog backend: opaque); use its presets instead`);
+  if (!changes || !Object.keys(changes).length) throw new Error('no changes given');
+}
+
+export const IN_PLACE_NOTE = 'Loaded in place through the plug-in\'s own Load Preset File: same instance, slot and bypass, and the song was not saved. Not realtime (a few seconds; Studio One\'s preset dialog flashes briefly).';
+
 /**
- * Sets parameters of the plug-in in `slot` of `channel` through its state, in one round-trip:
- * read the state, edit it, write a temporary preset, re-index, insert a new instance with it at the
- * same position, remove the old instance, restore the bypass, delete the preset.
- * -> { channel, slot, plugin, applied: {key: value}, missing: [], backend: 'state', realtime: false, source, slotName }
+ * Sets parameters of a plug-in through its state, in one round-trip. `target` is { channel, slot }
+ * or { instrument } (channel and slot are also taken as before).
+ * Windows: export the state in place, edit it, load it in place, export again to check.
+ *   -> { ...target, plugin, applied: {key: value}, missing: [], backend: 'state', realtime: false,
+ *        inPlace: true, source: 'export', unconfirmed?: [keys], note }
+ * Elsewhere: song-save read, then the slot is replaced with a new instance from a temporary preset
+ *   (writeByReplace). -> { channel, slot, plugin, applied, missing, backend, realtime: false, source, slotName }
  */
-export async function writePluginParams(call, { channel, slot, changes, entry }, opts = {}) {
+export async function writePluginParams(call, args, opts = {}) {
+  const { changes, entry } = args;
+  const target = args.target ?? (args.instrument != null ? { instrument: args.instrument } : { channel: args.channel, slot: args.slot });
+  if ((opts.platform ?? process.platform) !== 'win32') {
+    if (isInstrument(target)) throw new Error("an instrument's state can only be written on Windows (through its Load Preset File dialog)");
+    return writeByReplace(call, { channel: target.channel, slot: target.slot, changes, entry }, opts);
+  }
+  return writeInPlace(call, { target, changes, entry }, opts);
+}
+
+async function writeInPlace(call, { target, changes, entry }, opts) {
+  const { platform = 'win32', io = defaultIo, readState = readPluginState, runPython = pythonRunner(opts.python) } = opts;
+  checkEntry(entry, changes);
+  const read = () => readState(call, target, { platform, io });
+  const state = await read();
+  checkClass(entry, state, target);
+  const edit = await editState(state, entry, changes, runPython);
+  const base = {
+    ...targetFields(target), plugin: state.plugin, applied: edit.applied, missing: edit.missing,
+    backend: 'state', realtime: false, inPlace: true, source: state.source, note: IN_PLACE_NOTE,
+  };
+  if (!Object.keys(edit.applied).length) {
+    return { ...base, inPlace: false, note: `Nothing was applied: none of the changes is in ${entry.name}'s saved state (see missing); the plug-in was not touched.` };
+  }
+  const { ext, buf } = packExport(state.container || { kind: 'vstpreset' }, buildVstPreset({ classId: state.classId, chunks: edit.chunks }));
+  await io.loadState(call, target, buf, ext);
+
+  // Read it back: a plug-in may ignore a load or clamp a value.
+  if (!edit.written) return { ...base, note: `${IN_PLACE_NOTE} The binary state is not read back, so the values were not checked.` };
+  let after = null;
+  let why = null;
+  try { after = await read(); } catch (e) { why = e.message; }
+  const keys = Object.keys(edit.written);
+  const got = after?.xml ? getXmlAttrs(after.xml, keys.map((k) => edit.written[k][0])) : {};
+  const unconfirmed = keys.filter((k) => !sameStateValue(edit.written[k][1], got[edit.written[k][0]]));
+  if (!unconfirmed.length) return base;
+  const reason = why ? `the state could not be read back (${why})` : !after?.xml ? 'the state read back has no XML' : 'the state read back holds other values for them';
+  return { ...base, unconfirmed, note: `${IN_PLACE_NOTE} Some changes are unconfirmed: ${reason}; check them with live_plugin_params.` };
+}
+
+async function writeByReplace(call, { channel, slot, changes, entry }, opts = {}) {
   const {
     presetsRoot = defaultPresetsRoot(),
     readState = readPluginState,
@@ -303,17 +481,12 @@ export async function writePluginParams(call, { channel, slot, changes, entry },
     timeoutMs = 30000,
     uuid = () => crypto.randomUUID(),
   } = opts;
-  if (!entry) throw new Error('no catalog entry for this plug-in (run live_plugin_scan)');
-  const caps = entry.capabilities || {};
-  if (!caps.xmlState && !caps.stateRoundTrip) throw new Error(`${entry.name} has no editable state (catalog backend: opaque); use its presets instead`);
-  if (!changes || !Object.keys(changes).length) throw new Error('no changes given');
+  checkEntry(entry, changes);
 
   // A focused plug-in window can hold edits the song has not seen yet.
   await closeWindows({ channel });
-  const state = await readState(call, { channel, slot });
-  if (entry.classId ? braceClassId(entry.classId) !== braceClassId(state.classId) : matchPlugin(new Map([[entry.name, entry]]), state.plugin) !== entry) {
-    throw new Error(`slot ${slot} of ${channel} holds ${state.plugin}, not ${entry.name}; nothing changed`);
-  }
+  const state = await readState(call, { channel, slot }, { platform: opts.platform ?? process.platform });
+  checkClass(entry, state, { channel, slot });
   const edit = await editState(state, entry, changes, runPython);
   const base = {
     channel, slot, plugin: state.plugin, applied: edit.applied, missing: edit.missing, backend: 'state', realtime: false, source: state.source,

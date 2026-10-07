@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import { buildVstPreset, parseVstPreset, readJuceXml, writeJuceXml } from '../src/plugins/vstpreset.js';
 import { execFileSync } from 'node:child_process';
 import { readPluginState, writePluginParams, findSlotPreset, braceClassId, APPLY_STATE_SCRIPT } from '../src/plugins/state.js';
@@ -93,7 +93,10 @@ function fakeStudio({ bypassed = false, failInsert = false, indexAfter = 1, remo
   return st;
 }
 
+// The song-save + replace-slot path is the non-Windows fallback.
+const LINUX = { platform: 'linux' };
 const opts = (st, extra = {}) => ({
+  platform: 'linux',
   presetsRoot: st.presetsRoot,
   readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', ...parseState(preset()), source: 'song-save' }),
   closeWindows: async (o) => (st.log.push(['closeWindows', o && o.channel ? `closeWindows:${o.channel}` : 'closeWindows']), []),
@@ -389,7 +392,7 @@ function readCall(file, log = [], save = async () => ({ executed: true })) {
 test('readPluginState: saves the song and reads the slot preset the mixer names', async () => {
   const f = songFile({ 'Devices/audiomixer.xml': MIXER, 'Presets/Channels/Gtr/2 - Archetype Petrucci X.vstpreset': preset() });
   const log = [];
-  const s = await readPluginState(readCall(f, log), { channel: 'Gtr', slot: 0 });
+  const s = await readPluginState(readCall(f, log), { channel: 'Gtr', slot: 0 }, LINUX);
   assert.deepEqual(log, ['inserts', 'song', 'save']);
   assert.equal(s.source, 'song-save');
   assert.equal(s.classId, CLASS_ID);
@@ -401,10 +404,10 @@ test('readPluginState: saves the song and reads the slot preset the mixer names'
 
 test('findSlotPreset: falls back to the "<slot+1> - " prefix; clear error when absent', async () => {
   const f = songFile({ 'Presets/Channels/Gtr/1 - Archetype Petrucci X.vstpreset': preset() });
-  const s = await readPluginState(readCall(f), { channel: 'Gtr', slot: 0 });
+  const s = await readPluginState(readCall(f), { channel: 'Gtr', slot: 0 }, LINUX);
   assert.equal(s.presetPath, 'Presets/Channels/Gtr/1 - Archetype Petrucci X.vstpreset');
   const g = songFile({ 'Presets/Channels/Other/1 - X.vstpreset': preset() });
-  await assert.rejects(readPluginState(readCall(g), { channel: 'Gtr', slot: 0 }), /no saved state for slot 0 of Gtr/);
+  await assert.rejects(readPluginState(readCall(g), { channel: 'Gtr', slot: 0 }, LINUX), /no saved state for slot 0 of Gtr/);
   assert.equal(typeof findSlotPreset, 'function');
 });
 
@@ -417,14 +420,14 @@ test('readPluginState: no .song file (untitled song) is an error and never trigg
       if (op === 'song') return { fileUrl };
       throw new Error(op);
     };
-    await assert.rejects(readPluginState(call, { channel: 'Gtr', slot: 0 }), /no \.song file yet/);
+    await assert.rejects(readPluginState(call, { channel: 'Gtr', slot: 0 }, LINUX), /no \.song file yet/);
     assert.ok(!log.includes('save'));
   }
 });
 
 test('readPluginState: a missing slot is an error before saving', async () => {
   const log = [];
-  await assert.rejects(readPluginState(readCall('nope', log), { channel: 'Gtr', slot: 3 }), /no plug-in in slot 3 on Gtr/);
+  await assert.rejects(readPluginState(readCall('nope', log), { channel: 'Gtr', slot: 3 }, LINUX), /no plug-in in slot 3 on Gtr/);
   assert.deepEqual(log, ['inserts']);
 });
 
@@ -440,8 +443,185 @@ test('apply-state.py --selftest: JUCE base64 and raw_state wrapping round-trip',
 
 test('readPluginState: a greyed-out File/Save (nothing unsaved) reads the file as it is; other save errors fail', async () => {
   const f = songFile({ 'Devices/audiomixer.xml': MIXER, 'Presets/Channels/Gtr/2 - Archetype Petrucci X.vstpreset': preset() });
-  const s = await readPluginState(readCall(f, [], async () => { throw new Error('Studio One: File/Save is not available right now'); }), { channel: 'Gtr', slot: 0 });
+  const s = await readPluginState(readCall(f, [], async () => { throw new Error('Studio One: File/Save is not available right now'); }), { channel: 'Gtr', slot: 0 }, LINUX);
   assert.equal(s.saved, false);
   assert.equal(s.xml, XML);
-  await assert.rejects(readPluginState(readCall(f, [], async () => { throw new Error('did not answer'); }), { channel: 'Gtr', slot: 0 }), /could not save the song.*did not answer/);
+  await assert.rejects(readPluginState(readCall(f, [], async () => { throw new Error('did not answer'); }), { channel: 'Gtr', slot: 0 }, LINUX), /could not save the song.*did not answer/);
+});
+
+// ---- in place (Windows): Export Preset -> edit -> Load Preset File, no save, no replace ----------
+
+const XML_OF = (buf) => readJuceXml(parseVstPreset(buf).chunks.find((c) => c.id === 'Comp').data);
+
+// A fake plug-in behind Export/Load Preset: holds a state; loadState sets it (unless `ignoreLoads`).
+// `call` logs every bridge op; the song-save / replace ops are not expected.
+function inPlace({ state = preset(), ext = '.vstpreset', wrap = (b) => b, ignoreLoads = false, inserts = [{ slot: 0, name: 'Archetype Petrucci X', bypassed: false }] } = {}) {
+  const log = [];
+  const t = { log, state, loads: [], exports: [] };
+  t.call = async (op, args = {}) => {
+    log.push(args.ops ? args.ops[0].op : op);
+    if (op === 'inserts') return [{ channel: 'Gtr', inserts }];
+    throw new Error(`unexpected op ${op}`);
+  };
+  t.io = {
+    exportState: async (call, target) => { t.exports.push(target); return { ext, buf: wrap(t.state) }; },
+    loadState: async (call, target, buf, e) => { t.loads.push({ target, buf, ext: e }); if (!ignoreLoads && e === '.vstpreset') t.state = buf; return { ok: true }; },
+  };
+  return t;
+}
+const WIN = (t, extra = {}) => ({ platform: 'win32', io: t.io, ...extra });
+const FORBIDDEN = ['save', 'song', 'insertPreset', 'slotCommand', 'command', 'listPresets', 'setInsertBypass', 'insertSlotName'];
+
+test('readPluginState (Windows): exports the state in place; never saves the song', async () => {
+  const t = inPlace();
+  const s = await readPluginState(t.call, { channel: 'Gtr', slot: 0 }, WIN(t));
+  assert.equal(s.source, 'export');
+  assert.equal(s.classId, CLASS_ID);
+  assert.equal(s.cid, CID);
+  assert.equal(s.xml, XML);
+  assert.equal(s.plugin, 'Archetype Petrucci X');
+  assert.ok(Buffer.isBuffer(s.raw));
+  assert.deepEqual(t.exports, [{ channel: 'Gtr', slot: 0 }]);
+  assert.ok(!t.log.some((o) => FORBIDDEN.includes(o)), t.log.join());
+});
+
+test('writePluginParams (Windows): export -> edit -> load in place; no save, no insert/remove, no re-index', async () => {
+  const t = inPlace();
+  const r = await writePluginParams(t.call, { target: { channel: 'Gtr', slot: 0 }, changes: { input_gain: 6, gate_active: false }, entry: ENTRY }, WIN(t));
+  assert.equal(r.inPlace, true);
+  assert.equal(r.backend, 'state');
+  assert.equal(r.realtime, false);
+  assert.equal(r.source, 'export');
+  assert.deepEqual(r.applied, { input_gain: 6, gate_active: false });
+  assert.deepEqual(r.missing, []);
+  assert.equal(r.unconfirmed, undefined);
+  assert.equal(r.channel, 'Gtr');
+  assert.equal(r.slot, 0);
+  assert.equal(t.loads.length, 1);
+  assert.equal(t.loads[0].ext, '.vstpreset');
+  assert.deepEqual(t.loads[0].target, { channel: 'Gtr', slot: 0 });
+  assert.match(XML_OF(t.loads[0].buf), /inputGain="6" gateActive="false" outputGain="0"/);
+  assert.equal(parseVstPreset(t.loads[0].buf).classId, CLASS_ID);
+  assert.equal(t.exports.length, 2, 'exported again after the load to verify');
+  assert.ok(!t.log.some((o) => FORBIDDEN.includes(o)), t.log.join());
+  assert.doesNotMatch(r.note || '', /replaced/);
+});
+
+test('writePluginParams (Windows): channel/slot arguments still work (same as target)', async () => {
+  const t = inPlace();
+  const r = await writePluginParams(t.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 2 }, entry: ENTRY }, WIN(t));
+  assert.equal(r.inPlace, true);
+  assert.deepEqual(t.loads[0].target, { channel: 'Gtr', slot: 0 });
+});
+
+test('writePluginParams (Windows): a plug-in that ignores the load is reported as unconfirmed', async () => {
+  const t = inPlace({ ignoreLoads: true });
+  const r = await writePluginParams(t.call, { target: { channel: 'Gtr', slot: 0 }, changes: { input_gain: 6, output_gain: 0 }, entry: ENTRY }, WIN(t));
+  assert.deepEqual(r.unconfirmed, ['input_gain'], 'output_gain was already 0, so it reads back as asked');
+  assert.match(r.note, /unconfirmed/);
+});
+
+test('writePluginParams (Windows): nothing applicable -> nothing loaded', async () => {
+  const t = inPlace();
+  const r = await writePluginParams(t.call, { target: { channel: 'Gtr', slot: 0 }, changes: { broken: 1 }, entry: ENTRY }, WIN(t));
+  assert.deepEqual(r.applied, {});
+  assert.deepEqual(r.missing, ['broken']);
+  assert.equal(t.loads.length, 0);
+});
+
+test('writePluginParams (Windows): a slot holding another plug-in is refused before loading', async () => {
+  const t = inPlace({ state: buildVstPreset({ classId: '0'.repeat(32), chunks: [{ id: 'Comp', data: writeJuceXml(XML) }] }), inserts: [{ slot: 0, name: 'Pro EQ', bypassed: false }] });
+  await assert.rejects(writePluginParams(t.call, { target: { channel: 'Gtr', slot: 0 }, changes: { input_gain: 1 }, entry: { ...ENTRY, classId: CLASS_ID } }, WIN(t)), /holds Pro EQ, not Archetype Petrucci X; nothing changed/);
+  assert.equal(t.loads.length, 0);
+});
+
+// A third-party instrument's export: .instrument zip with the synth part, the channel's insert presets and channel data.
+const SYNTH_ID = '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}';
+function instrumentZip(synthPreset) {
+  const parts = `<?xml version="1.0" encoding="UTF-8"?>
+<PresetParts>
+	<PresetPart>
+		<Attribute id="Class:ID" value="${SYNTH_ID}"/>
+		<Attribute id="Class:Name" value="Synth X"/>
+		<Attribute id="AudioSynth:IsMainPreset" value="1"/>
+		<Attribute id="Preset:DataFile" value="Synth X.vstpreset"/>
+		<Attribute id="Preset:DataMimeType" value="application/x-steinberg-vstpreset"/>
+	</PresetPart>
+	<PresetPart>
+		<Attribute id="Class:ID" value="{11111111-2222-3333-4444-555555555555}"/>
+		<Attribute id="Class:Name" value="Some FX"/>
+		<Attribute id="Inserts:DeviceUID" value="{X}"/>
+		<Attribute id="Preset:DataFile" value="Synth X/1 - Some FX.vstpreset"/>
+		<Attribute id="Preset:DataMimeType" value="application/x-steinberg-vstpreset"/>
+	</PresetPart>
+</PresetParts>`;
+  const meta = `<?xml version="1.0" encoding="UTF-8"?>
+<MetaInformation>
+	<Attribute id="Class:ID" value="${SYNTH_ID}"/>
+	<Attribute id="Class:Name" value="Synth X"/>
+	<Attribute id="Document:Title" value="t"/>
+	<Attribute id="Document:MimeType" value="application/x.presonus-instrument"/>
+</MetaInformation>`;
+  return Buffer.from(zipSync({
+    'Synth X.vstpreset': new Uint8Array(synthPreset),
+    'Synth X/1 - Some FX.vstpreset': strToU8('FX STATE'),
+    '.Channels/Channel0.data': strToU8('<Channel/>'),
+    'presetparts.xml': strToU8(parts),
+    'metainfo.xml': strToU8(meta),
+  }));
+}
+
+test('instrument target: only the synth part is read, and written back as a synth-only .preset (inserts and channel untouched)', async () => {
+  const t = inPlace({ ext: '.instrument', wrap: instrumentZip });
+  // Loading the .preset applies the synth state.
+  t.io.loadState = async (call, target, buf, e) => {
+    t.loads.push({ target, buf, ext: e });
+    t.state = Buffer.from(unzipSync(new Uint8Array(buf))['data.vstpreset']);
+    return { ok: true };
+  };
+  const entry = { ...ENTRY, name: 'Synth X', isInstrument: true, classId: CLASS_ID };
+  const s = await readPluginState(t.call, { instrument: 'Synth X' }, WIN(t));
+  assert.equal(s.classId, CLASS_ID);
+  assert.equal(s.xml, XML);
+  assert.equal(s.plugin, 'Synth X');
+  assert.equal(s.instrument, 'Synth X');
+  const r = await writePluginParams(t.call, { target: { instrument: 'Synth X' }, changes: { input_gain: 6 }, entry }, WIN(t));
+  assert.equal(r.inPlace, true);
+  assert.equal(r.instrument, 'Synth X');
+  assert.equal(r.unconfirmed, undefined);
+  const load = t.loads[0];
+  assert.deepEqual(load.target, { instrument: 'Synth X' });
+  assert.equal(load.ext, '.preset');
+  const z = unzipSync(new Uint8Array(load.buf));
+  assert.deepEqual(Object.keys(z).sort(), ['data.vstpreset', 'metainfo.xml']);
+  const meta = strFromU8(z['metainfo.xml']);
+  assert.match(meta, /Document:MimeType" value="application\/x-presonus-preset"/);
+  assert.match(meta, /Preset:DataFile" value="data\.vstpreset"/);
+  assert.match(meta, /Preset:DataMimeType" value="application\/x-steinberg-vstpreset"/);
+  assert.match(meta, /Class:ID" value="\{ABCDEF01/);
+  assert.match(XML_OF(Buffer.from(z['data.vstpreset'])), /inputGain="6"/);
+  assert.ok(!t.log.some((o) => FORBIDDEN.includes(o)), t.log.join());
+  assert.ok(!t.log.includes('inserts'), 'an instrument target never looks at a channel rack');
+});
+
+test('a .preset export (PreSonus container around a .vstpreset) is edited inside its container', async () => {
+  const meta = '<?xml version="1.0" encoding="UTF-8"?>\n<MetaInformation>\n\t<Attribute id="Class:ID" value="' + CID + '"/>\n\t<Attribute id="Class:Name" value="Archetype Petrucci X"/>\n\t<Attribute id="Preset:DataFile" value="data.vstpreset"/>\n</MetaInformation>';
+  const wrap = (b) => Buffer.from(zipSync({ 'data.vstpreset': new Uint8Array(b), 'metainfo.xml': strToU8(meta) }));
+  const t = inPlace({ ext: '.preset', wrap });
+  t.io.loadState = async (call, target, buf, e) => { t.loads.push({ target, buf, ext: e }); t.state = Buffer.from(unzipSync(new Uint8Array(buf))['data.vstpreset']); return { ok: true }; };
+  const r = await writePluginParams(t.call, { target: { channel: 'Gtr', slot: 0 }, changes: { input_gain: 3 }, entry: ENTRY }, WIN(t));
+  assert.equal(r.inPlace, true);
+  assert.equal(t.loads[0].ext, '.preset');
+  const z = unzipSync(new Uint8Array(t.loads[0].buf));
+  assert.equal(strFromU8(z['metainfo.xml']), meta);
+  assert.match(XML_OF(Buffer.from(z['data.vstpreset'])), /inputGain="3"/);
+});
+
+test('fallback: off Windows the song-save + replace path is used, and presetio is never touched', async () => {
+  const st = fakeStudio();
+  const io = { exportState: async () => { throw new Error('io used'); }, loadState: async () => { throw new Error('io used'); } };
+  const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 6 }, entry: ENTRY }, opts(st, { io }));
+  assert.equal(r.inPlace, undefined);
+  assert.ok(ops(st).includes('insertPreset'));
+  await assert.rejects(readPluginState(async () => { throw new Error('x'); }, { instrument: 'Mai Tai' }, { platform: 'linux', io }), /instrument.*Windows/);
 });

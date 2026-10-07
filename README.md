@@ -49,7 +49,7 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_write_drums` | Write a drum pattern from one `x`/`X`/`.` string per General MIDI lane (kick, snare, hat...) from a bar, repeated for N bars; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
 | `live_inserts` / `live_bypass_insert` | Plug-ins on each channel (slot, name, bypassed), and bypass one slot or the whole rack. |
 | `live_sends` / `live_set_send` | Each channel's sends (destination name, level 0..1 and in dB, mute), and set a level or mute. |
-| `live_plugin_params` / `live_set_plugin_param` | Any plug-in's parameters with their values, and set one or a batch (`changes`). PreSonus plug-ins are read and set live (display text like `"2.0:1"`, range, normalised value). Scanned third-party plug-ins go through their saved state: not realtime, and the song is saved. Each result says its `backend` and whether it was `realtime`. See [Plug-ins](#plug-ins). |
+| `live_plugin_params` / `live_set_plugin_param` | Any plug-in's parameters with their values, and set one or a batch (`changes`). PreSonus plug-ins are read and set live (display text like `"2.0:1"`, range, normalised value). Scanned third-party plug-ins go through their saved state: not realtime; on Windows in place (exported and loaded back through the plug-in's own preset commands, no song save), elsewhere the song is saved. Each result says its `backend` and whether it was `realtime`. See [Plug-ins](#plug-ins). |
 | `live_plugin_presets` | The presets Studio One has indexed for a plug-in (by slot or by name), and load one onto a slot. List: any plug-in, including ones that hide their parameters; load: insert effects only. |
 | `live_remove_plugin` | Remove the plug-in in one insert slot. One undo brings it back with its settings. |
 | `live_plugin_window` | Open a slot's plug-in window, or close all plug-in windows (Windows only). |
@@ -83,7 +83,7 @@ Studio One's scripting API sets a parameter by name only for PreSonus plug-ins, 
 | Backend | Plug-ins | Read | Set | `realtime` |
 |---|---|---|---|---|
 | `native` | PreSonus (Pro EQ, Compressor, Fat Channel…) | Live values, display text and ranges. | Live, by display text, normalised or raw value. | `true` |
-| `state` | Scanned third-party plug-ins whose saved state the scanner could map to their parameters (e.g. Neural DSP Archetypes) | Saves the song (File/Save) and reads the slot's state from the song file. | Edits that state and **replaces the plug-in** with a new instance carrying it, at the same slot with the same bypass. | `false` |
+| `state` | Scanned third-party plug-ins whose saved state the scanner could map to their parameters (e.g. Neural DSP Archetypes) | Windows: exports the plug-in's state in place (its own Export Preset). Elsewhere: saves the song (File/Save) and reads the slot's state from the song file. | Windows: edits that state and loads it back **in place** (Load Preset File): same instance, slot and bypass, no song save. Elsewhere: **replaces the plug-in** with a new instance carrying it, at the same slot with the same bypass. | `false` |
 | `opaque` | Plug-ins that hide their parameters from hosts (e.g. IK MODO BASS), whose saved state could not be mapped to any parameter, that failed to scan, or that are not in the catalog yet | Nothing; the result says why. | Refused, with what to do instead: load a preset with `live_plugin_presets`. | `false` |
 
 **Setting up the scanner (once).** The scanner runs in its own Python environment, using [pedalboard](https://github.com/spotify/pedalboard) to load each VST3 plug-in:
@@ -96,7 +96,17 @@ Then run the **first scan in a terminal**, with `npm run scan` in the studio-one
 
 **Units.** Third-party values are in the units `live_plugin_params` shows, the plug-in's own display units (`"50 %"`, `"-6 dB"`). A plug-in's saved state does not always store them that way: Archetype stores 0..1 for a 0..100 % knob, while its dB and ms values are stored as shown. The scanner checks every mapped parameter: it compares the saved default with the displayed default, then loads edited states into the plug-in and reads back what it displays, and records how the state stores the value (`stateScale`: a factor such as 0.01, or `{ a, b }` for state = a × value + b). Parameters it cannot verify (for example a log-scaled frequency stored as 0..1) are listed in `unverifiedKeys`: `live_plugin_params` shows them with `value: null`, the raw `stateValue` and `unverified: true`, and setting them is refused. `{ normalized }` is refused for third-party plug-ins too, because a linear 0..1 of the range is wrong for log-scaled parameters.
 
-**What "not realtime" means.** A `state` change works like this:
+**What "not realtime" means.** On Windows a `state` change works in place:
+
+1. Run the plug-in's Presets/Export Preset; studio-one-mcp fills Studio One's file dialog with a temporary path (`%TEMP%\studio-one-mcp`) by script, without bringing any window to the front or faking input.
+2. Edit the exported state.
+3. Load it back with Presets/Load Preset File, the same way.
+4. Export once more and compare: a change that does not read back as asked is listed in `unconfirmed`.
+5. Delete the temporary files.
+
+The instance, its slot, its channel and its bypass are untouched, the song is not saved, and the result says `inPlace: true`. One change takes a few seconds (each dialog round about 2 s), and the preset dialog flashes briefly. `live_undo` does not revert it: the load is not an undo step, so an undo lands on an earlier edit instead. Set the previous values to go back. For an instrument, only the synth's own state is loaded (as a synth-only `.preset`): loading the `.instrument` bundle Studio One exports would rebuild the instrument channel's whole insert chain.
+
+On other systems (no file-dialog automation) a `state` change works like this:
 
 1. Save the song and read the plug-in's state from it.
 2. Edit the state and write it as a temporary preset.
@@ -105,13 +115,12 @@ Then run the **first scan in a terminal**, with `npm run scan` in the studio-one
 5. Restore the bypass.
 6. Delete the temporary preset.
 
-This takes a few seconds per change, about 3 to 4 s here. With a large preset library, re-indexing can take up to about 15 s. Batch several changes into one call (`changes: { name: value }`), so they cost one round-trip. Keep these points in mind:
+This takes a few seconds per change, about 3 to 4 s here. With a large preset library, re-indexing can take up to about 15 s. Batch several changes into one call (`changes: { name: value }`), so they cost one round-trip (this holds for the in-place path too). Keep these points in mind:
 
-- Edits made in the plug-in's window while a change runs are lost.
-- The instance name can alternate between "Name" and "Name 2".
-- **Do NOT use `live_undo` to revert a third-party parameter change or preset load: it brings the old instance back next to the new one. Set the previous values or load the previous preset instead.**
+- Replace path only: edits made in the plug-in's window while a change runs are lost, and the instance name can alternate between "Name" and "Name 2".
+- **Do NOT use `live_undo` to revert a replace-path parameter change or a preset load: it brings the old instance back next to the new one. Set the previous values or load the previous preset instead.**
 - Values are numbers in the parameter's display units, or on/off. A choice such as an amp type is its index (0 .. choices − 1, as `live_plugin_params` shows it); text such as "Clean" is refused, because the plug-in would read it as some arbitrary number.
-- A parameter name the plug-in does not have is refused, before anything is saved.
+- A parameter name the plug-in does not have is refused, before anything is exported or saved.
 - Plug-in operations that change the session (third-party reads and writes, preset loads, adds, removes, scans) run one at a time. Inserting or removing an instance may take up to 30 s to answer; if the answer is late, the rack is read again to tell what happened.
 - Parameter automation of a third-party plug-in is not covered.
 
