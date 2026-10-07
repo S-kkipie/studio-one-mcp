@@ -1,7 +1,7 @@
 # Studio One MCP — Windows fork + composition layer (design)
 
 Date: 2026-10-07
-Status: approved in chat, pending written review
+Status: implemented on branch main-windows (2026-10-07)
 
 ## Goal
 
@@ -49,7 +49,10 @@ position, gets `context.functions.root.createFunctions("MusicFunctions")`, and p
 note does `createEvent("Note")` → `insertEvent(part, note)` → `modifyPitch` →
 `modifyVelocity` (+`freezeVelocity`) → `resizeEvent(length beats)` →
 `moveEvent(start beat)`. This exact sequence worked in the spike. All notes of one call are one
-undo step (`beginMultiple`/`endMultiple` when available).
+undo step (`beginMultiple`/`endMultiple` when available, `endMultiple` always runs).
+`addNotes` takes an optional `end` (seconds): among the parts covering `at` it prefers one that
+also covers `end`, the one ending latest if several do. Notes running past the chosen part's end
+are reported as per-note errors (`note N: ends after the part`) and skipped.
 
 `live_edit_notes` with an `add` op routes to this path when the track's parts hold
 no notes; other ops are unchanged.
@@ -62,8 +65,8 @@ Pitches accept MIDI numbers or names with Studio One's convention, **middle C = 
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `live_create_part` | `track`, `bar`, `bars` | Select track → `Instrument Parts/Insert Instrument Part` (lands as a one-bar part at a fixed spot unrelated to the playhead and loop) → find the new part by diffing the track's events → move and resize it with the edit task (`editEvent` to + end; only what is needed) → restore selection. Two `live_undo` steps remove it (position and length, then the insert; verified live). Returns the part. |
-| `live_write_notes` | `track`, `bar`, `notes[{pitch, beat, length, velocity?}]`, `create_part` (default true) | Creates a part covering the notes if none covers `bar`, then `addNotes`. Beats are relative to `bar`. |
+| `live_create_part` | `track`, `bar`, `bars` | Select track → `Instrument Parts/Insert Instrument Part` (lands as a one-bar part at a fixed spot unrelated to the playhead and loop) → find the new part by diffing the track's events → move and resize it with the edit task (`editEvent` to + end; only what is needed) → restore selection. The result's `undoSteps` is 1 when the insert already landed right (one `live_undo`), 2 when a move/resize was needed (verified live). Returns the part and `undoSteps`. |
+| `live_write_notes` | `track`, `bar`, `notes[{pitch, beat, length, velocity?}]`, `create_part` (default true) | Creates a part covering the notes if none covers `bar`, then `addNotes`. Beats are relative to `bar`. Refuses (error) when a part overlaps the range without covering it, instead of writing into the wrong part. Returns `partUndoSteps` (0 when no part was created, else createPart's `undoSteps`). |
 | `live_write_chords` | `track`, `bar`, `progression` (`"Cm7 \| Ab \| Eb \| Bb"`), `bars_per_chord` (1), `voicing` (`close`\|`open`\|`drop2`, default close), `octave` (3), `rhythm` (`sustain`\|`eighths`\|`quarters`\|`arp_up`\|`arp_down`), `velocity` (90) | Theory module → notes → `live_write_notes`. |
 | `live_write_drums` | `track`, `bar`, `bars` (1), `pattern` {`kick`: `"x...x...x...x..."`, …}, `steps_per_beat` (4), `velocity` (100, `X` = accent 120) | Lanes map to General MIDI pitches (kick 36, snare 38, clap 39, rim 37, closed_hat 42, open_hat 46, pedal_hat 44, low_tom 45, mid_tom 47, high_tom 50, crash 49, ride 51); a raw MIDI number is also accepted as lane name. Pattern repeats for `bars`. |
 

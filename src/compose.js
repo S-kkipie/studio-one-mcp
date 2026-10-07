@@ -40,12 +40,19 @@ async function restoreSelection(call, names) {
 // part is.
 const NEAR = 0.01;
 
+const evKey = (e) => `${e.start}|${e.end}`;
+// Events in `after` that were not in `before` (matched by start and end).
+function freshParts(before, after) {
+  const seen = new Map();
+  for (const e of before) seen.set(evKey(e), (seen.get(evKey(e)) || 0) + 1);
+  return after.filter((e) => { const n = seen.get(evKey(e)) || 0; if (n) seen.set(evKey(e), n - 1); return !n; });
+}
+
 export async function createPart(call, { track, bar, bars = 1 }) {
   checkBar(bar);
   if (!Number.isInteger(bars) || bars < 1) throw new Error('bars must be an integer >= 1');
   const [start, end] = await barSeconds(call, [bar, bar + bars]);
   const { selectedTracks } = await call('song');
-  const key = (e) => `${e.start}|${e.end}`;
   const listEvents = async () => (await trackTask(call, { op: 'events', track })).events;
   const before = await listEvents();
   let r;
@@ -57,14 +64,22 @@ export async function createPart(call, { track, bar, bars = 1 }) {
   }
   if (!r || !r.executed) throw new Error(`could not insert an instrument part on ${track} (is it an instrument track?)`);
   const after = await listEvents();
-  const seen = new Map();
-  for (const e of before) seen.set(key(e), (seen.get(key(e)) || 0) + 1);
-  const fresh = after.filter((e) => { const n = seen.get(key(e)) || 0; if (n) seen.set(key(e), n - 1); return !n; });
+  const fresh = freshParts(before, after);
   if (!fresh.length) throw new Error(`Studio One did not add a part to ${track}`);
   const part = fresh.find((e) => Math.abs(e.start - start) <= NEAR) || fresh[0];
-  const left = (msg) => new Error(`${msg}; a new one-bar part was left at ${part.start} s on ${track}; remove it or run live_undo`);
+  // The part's position now, for messages: the edit may have moved it before failing.
+  const left = async (msg) => {
+    let where = part.start;
+    try {
+      const now = freshParts(before, await listEvents());
+      const cur = (now.length === 1 ? now[0] : null) || now.find((e) => Math.abs(e.start - start) <= NEAR) || now.find((e) => e.number === part.number);
+      if (cur) where = cur.start;
+    } catch { /* keep the position from the insert */ }
+    return new Error(`${msg}; a new one-bar part was left at ${where} s on ${track}; remove it or run live_undo`);
+  };
   const atStart = Math.abs(part.start - start) <= NEAR;
-  if (fresh.length > 1 && !atStart) throw left(`Studio One added ${fresh.length} parts to ${track}; cannot tell which is new`);
+  if (fresh.length > 1 && !atStart) throw await left(`Studio One added ${fresh.length} parts to ${track}; cannot tell which is new`);
+  let undoSteps = 1;
   if (!atStart || Math.abs(part.end - end) > NEAR) {
     const op = { op: 'editEvent', track, event: part.number, end };
     if (!atStart) op.to = start;
@@ -72,11 +87,13 @@ export async function createPart(call, { track, bar, bars = 1 }) {
     try {
       edited = await trackTask(call, op);
     } catch (e) {
-      throw left(e.message);
+      throw await left(e.message);
     }
-    if (!(edited.done || []).includes('resize')) throw left('Studio One did not resize the new part (reinstall the device and restart Studio One, then retry)');
+    if (!(edited.done || []).includes('resize')) throw await left('Studio One did not resize the new part (reinstall the device and restart Studio One, then retry)');
+    undoSteps = 2;
   }
-  return { track, part: { start, end } };
+  // undoSteps: live_undo steps that remove the part (the insert, plus the move/resize when one was needed).
+  return { track, part: { start, end }, undoSteps };
 }
 
 export async function writeNotes(call, { track, bar, notes, createPart: create = true }) {
@@ -93,16 +110,21 @@ export async function writeNotes(call, { track, bar, notes, createPart: create =
   const { parts } = await call('notes', { track });
   const covers = (parts || []).some((p) => p.start <= at + EPS && p.end >= end - EPS);
   let createdPart = false;
+  let partUndoSteps = 0;
   if (!covers) {
+    if ((parts || []).some((p) => p.start < end - EPS && p.end > at + EPS)) {
+      throw new Error(`bar ${bar} to ${bar + span} overlaps an existing part on ${track} that does not cover it; write into an empty area or extend that part first`);
+    }
     if (!create) throw new Error(`no part covers bar ${bar} to ${bar + span} on ${track}`);
-    await createPart(call, { track, bar, bars: span });
+    ({ undoSteps: partUndoSteps } = await createPart(call, { track, bar, bars: span }));
     createdPart = true;
   }
-  const r = await trackTask(call, { op: 'addNotes', track, at, notes: list });
-  return { track, bar, added: r.added, errors: r.errors, createdPart };
+  const r = await trackTask(call, { op: 'addNotes', track, at, end, notes: list });
+  return { track, bar, added: r.added, errors: r.errors, createdPart, partUndoSteps };
 }
 
 export async function writeChords(call, { track, bar, progression, barsPerChord = 1, voicing = 'close', octave = 3, rhythm = 'sustain', velocity = 90 }) {
+  if (!Number.isInteger(barsPerChord) || barsPerChord < 1) throw new Error('bars_per_chord must be an integer >= 1');
   const chords = parseProgression(progression, { barsPerChord, beatsPerBar: BEATS_PER_BAR });
   const notes = [];
   for (const c of chords) {
@@ -113,6 +135,8 @@ export async function writeChords(call, { track, bar, progression, barsPerChord 
 }
 
 export async function writeDrums(call, { track, bar, bars = 1, pattern, stepsPerBeat = 4, velocity = 100 }) {
+  if (!Number.isInteger(bars) || bars < 1) throw new Error('bars must be an integer >= 1');
+  if (!Number.isInteger(stepsPerBeat) || stepsPerBeat < 1) throw new Error('steps_per_beat must be an integer >= 1');
   const notes = drumGrid(pattern, { bars, stepsPerBeat, beatsPerBar: BEATS_PER_BAR, velocity });
   if (!notes.length) throw new Error('the pattern has no hits');
   return writeNotes(call, { track, bar, notes });

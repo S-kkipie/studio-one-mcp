@@ -217,6 +217,7 @@ server.tool(
   guard(async ({ track, ops }) => {
     if (ops.some((o) => o.op === 'add')) {
       const { parts } = await call('notes', { track, maxNotes: 1 });
+      if (!parts || !parts.length) throw new Error(`${track} has no parts; use live_write_notes (it creates one)`);
       const empty = addsToEmptyPart(parts, ops.find((o) => o.op === 'add').notes);
       if (empty) {
         if (ops.length !== 1) throw new Error('the track\'s parts have no notes yet: send the add on its own first (or use live_write_notes), then the other operations');
@@ -477,14 +478,14 @@ const PITCH = z.union([z.number().int(), z.string()]).describe('MIDI number or a
 
 server.tool(
   'live_create_part',
-  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The track selection is put back. Two live_undo steps remove it (the position and length, then the insert).',
+  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The track selection is put back. The result's undoSteps says how many live_undo steps remove it (the insert, plus one for the position and length when they had to be set).',
   { track: z.string(), bar: z.number().int().describe('1-based bar'), bars: z.number().int().optional().describe('Default 1') },
   guard((a) => createPart(call, a)),
 );
 
 server.tool(
   'live_write_notes',
-  'Write notes on an instrument track in the running Studio One, starting at bar `bar` (beats relative to that bar, quarter notes, 4/4). Makes a part covering the notes if there is none (create_part: false to refuse); write into an empty area or a part that covers the whole range. Works on new, empty parts. Pitches as MIDI numbers or names (middle C = C3). Undo with live_undo (check with live_notes); a part it created takes two more steps to remove. Read back with live_notes.',
+  'Write notes on an instrument track in the running Studio One, starting at bar `bar` (beats relative to that bar, quarter notes, 4/4). Makes a part covering the notes if there is none (create_part: false to refuse); write into an empty area or a part that covers the whole range (a range that overlaps a shorter part is refused). Works on new, empty parts. Pitches as MIDI numbers or names (middle C = C3). Undo with live_undo (check with live_notes); a part it created takes more steps to remove (the result's partUndoSteps says how many; 0 when no part was made). Read back with live_notes.',
   {
     track: z.string(),
     bar: z.number().int(),
@@ -496,7 +497,7 @@ server.tool(
 
 server.tool(
   'live_write_chords',
-  'Write a chord progression on an instrument track in the running Studio One from bar `bar`. Progression like "Cm7 | Ab | Eb Bb" (| separates bars; several chords in a bar share it) or "C G Am F" (one per bar). Chords: C, Cm, Cdim, Caug, Csus2, Csus4, C6, Cm6, C7, Cmaj7, Cm7, Cm7b5, Cdim7, C9, Cmaj9, Cm9, Cadd9, slash bass C/E. Voicing close|open|drop2, octave of the root (3 = middle C), rhythm sustain|quarters|eighths|arp_up|arp_down. 4/4. Undo with live_undo (check with live_notes); a part it created takes two more steps to remove.',
+  'Write a chord progression on an instrument track in the running Studio One from bar `bar`. Progression like "Cm7 | Ab | Eb Bb" (| separates bars; several chords in a bar share it) or "C G Am F" (one per bar). Chords: C, Cm, Cdim, Caug, Csus2, Csus4, C6, Cm6, C7, Cmaj7, Cm7, Cm7b5, Cdim7, C9, Cmaj9, Cm9, Cadd9, slash bass C/E. Voicing close|open|drop2, octave of the root (3 = middle C), rhythm sustain|quarters|eighths|arp_up|arp_down. 4/4. Undo with live_undo (check with live_notes); a part it created takes more steps to remove (the result's partUndoSteps says how many).',
   {
     track: z.string(),
     bar: z.number().int(),
@@ -512,7 +513,7 @@ server.tool(
 
 server.tool(
   'live_write_drums',
-  'Write a drum pattern on an instrument track (a drum instrument such as Impact) in the running Studio One from bar `bar`, repeated for `bars` bars. One string per lane: x = hit, X = accent, . = rest, spaces and | ignored; 16 steps = one bar of 16ths by default. Lanes (General MIDI): kick, rim, snare, clap, closed_hat (hat), pedal_hat, open_hat, low_tom, mid_tom, high_tom, crash, ride, or a MIDI note number. Example: { kick: "x...x...x...x...", snare: "....x.......x...", hat: "x.x.x.x.x.x.x.x." }. 4/4. Undo with live_undo (check with live_notes); a part it created takes two more steps to remove.',
+  'Write a drum pattern on an instrument track (a drum instrument such as Impact) in the running Studio One from bar `bar`, repeated for `bars` bars. One string per lane: x = hit, X = accent, . = rest, spaces and | ignored; 16 steps = one bar of 16ths by default. Lanes (General MIDI): kick, rim, snare, clap, closed_hat (hat), pedal_hat, open_hat, low_tom, mid_tom, high_tom, crash, ride, or a MIDI note number. Example: { kick: "x...x...x...x...", snare: "....x.......x...", hat: "x.x.x.x.x.x.x.x." }. 4/4. Undo with live_undo (check with live_notes); a part it created takes more steps to remove (the result's partUndoSteps says how many).',
   {
     track: z.string(),
     bar: z.number().int(),

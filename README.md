@@ -43,10 +43,10 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_plugins` / `live_add_plugin` | The installed plug-ins by name (PreSonus, VST and AU): effects, or instruments with `kind: "instrument"`. Add an effect to a channel's inserts by name; one undo removes it. |
 | `live_add_send` | Add an effect send: Studio One makes a new FX channel with the plug-in and a send to it (a reverb or delay send). Sending to an existing bus is not reachable from scripts, and this is not reliably undone. |
 | `live_add_instrument_track` | Add an instrument track with a new instance of an instrument by name (Mai Tai, Presence…). One undo removes both. |
-| `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the selection; two undo steps remove it (position and length, then the insert). |
-| `live_write_notes` | Write notes (MIDI numbers or names like `C3`, middle C = C3) on an instrument track from a bar, making a part to cover them if there is none; a part it created takes two more undo steps to remove. |
-| `live_write_chords` | Write a chord progression like `Cm7 \| Ab \| Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; a part it created takes two more undo steps to remove. |
-| `live_write_drums` | Write a drum pattern from one `x`/`X`/`.` string per General MIDI lane (kick, snare, hat...) from a bar, repeated for N bars; a part it created takes two more undo steps to remove. |
+| `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the selection; the result's `undoSteps` says how many `live_undo` steps remove it (the insert, plus one when the position or length had to be set). |
+| `live_write_notes` | Write notes (MIDI numbers or names like `C3`, middle C = C3) on an instrument track from a bar, making a part to cover them if there is none; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
+| `live_write_chords` | Write a chord progression like `Cm7 \| Ab \| Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
+| `live_write_drums` | Write a drum pattern from one `x`/`X`/`.` string per General MIDI lane (kick, snare, hat...) from a bar, repeated for N bars; a part it created takes more undo steps to remove (the result's `partUndoSteps` says how many). A range that overlaps a shorter existing part is refused. |
 | `live_inserts` / `live_bypass_insert` | Plug-ins on each channel (slot, name, bypassed), and bypass one slot or the whole rack. |
 | `live_sends` / `live_set_send` | Each channel's sends (destination name, level 0..1 and in dB, mute), and set a level or mute. |
 | `live_plugin_params` / `live_set_plugin_param` | A plug-in's parameters (value, display text like `"2.0:1"`, range, normalised value), and set one by display text, normalised value or raw value. Studio One cannot list a plug-in's parameters, so names come from its presets and Studio One's remote-control map, which covers the PreSonus plug-ins. For other plug-ins, pass the names. |
@@ -120,9 +120,9 @@ To update: `npx -y studio-one-mcp@latest setup`. It reinstalls the device and th
 
 | Env var | Default |
 |---|---|
-| `STUDIO_ONE_SONGS` | `~/Documents/Studio One/Songs` (colon-separated list) |
+| `STUDIO_ONE_SONGS` | `~/Documents/Studio One/Songs`; a list separated by `;` on Windows and `:` on macOS |
 | `STUDIO_ONE_PROFILE` | newest `…/PreSonus/Studio One *` user folder |
-| `STUDIO_ONE_MCP_MIDI_PORT` | first MIDI output whose name contains `IAC` |
+| `STUDIO_ONE_MCP_MIDI_PORT` | Windows: the loopMIDI port `studio-one-mcp`; macOS: first MIDI output whose name contains `IAC` |
 | `STUDIO_ONE_MCP_HOME` | `~/Library/Application Support/studio-one-mcp` (the mailbox lives here) |
 
 ## How the live bridge works

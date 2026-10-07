@@ -450,7 +450,9 @@ mtoOps.signatures = function (context, op) {
 };
 
 // { track, at (seconds), notes: [{ pitch, beat, length, velocity }] }: notes into the
-// instrument part covering `at`, beats relative to `at`. Goes through MusicFunctions,
+// instrument part covering `at`, beats relative to `at`. With `end` (seconds) it prefers a part
+// that covers [at, end), the one ending latest if several do; notes that run past the chosen part's
+// end are reported as errors and skipped. Goes through MusicFunctions,
 // not a Musical Function, because Studio One disables those on a part with no notes
 // (seen on 7.2.3), so this is how the first notes get into a new part.
 // moveEvent takes part-relative beats (seen on 7.2.3: a note at song bar 3 landed on beat 8, not 16).
@@ -461,25 +463,35 @@ mtoOps.addNotes = function (context, op) {
 	var mf = mtoFn(root, "createFunctions") ? root.createFunctions("MusicFunctions") : null;
 	if (!mtoFn(mf, "createEvent") || !mtoFn(mf, "insertEvent") || !mtoFn(mf, "moveEvent") || !mtoFn(mf, "modifyPitch") || !mtoFn(mf, "modifyVelocity") || !mtoFn(mf, "resizeEvent")) return { error: "MusicFunctions are not available" };
 	var at = typeof op.at === "number" ? op.at : 0;
-	var list = mtoEvents(t.track), part = null;
+	var wantEnd = typeof op.end === "number" ? op.end : null;
+	var list = mtoEvents(t.track), part = null, partEnd = null, partFull = false;
 	for (var i = 0; i < list.length; i++) {
 		var ev = list[i];
 		if (!mtoFn(ev, "createSequenceIterator")) continue;
 		var s = mtoSeconds(ev.startTime), e = mtoSeconds(ev.endTime);
-		if (s !== null && e !== null && s <= at + 0.001 && at < e - 0.001) { part = ev; break; }
+		if (s === null || e === null || !(s <= at + 0.001 && at < e - 0.001)) continue;
+		var full = wantEnd === null || e >= wantEnd - 0.001;
+		// a part that covers the whole range beats one that does not; then the one that ends latest
+		if (!part || (full && !partFull) || (full === partFull && e > partEnd)) { part = ev; partEnd = e; partFull = full; }
 	}
 	if (!part) return { error: "no instrument part on " + op.track + " at " + at + " s (create one first)" };
 	var anchor = mtoIn(context, at, 2), partStart = mtoIn(context, mtoSeconds(part.startTime), 2);
 	if (anchor === null || partStart === null) return { error: "cannot convert positions to beats" };
+	var partEndBeats = mtoIn(context, partEnd, 2);
 	var base = anchor - partStart;
+	var partLength = partEndBeats === null ? null : partEndBeats - partStart;
 	var notes = op.notes || [], added = 0, errors = [];
+	var fns = context.functions;
 	mf.executeImmediately = true;
+	// one undo step for all the notes
+	if (mtoFn(fns, "beginMultiple")) fns.beginMultiple("Add Notes");
 	try {
 		for (var n = 0; n < notes.length; n++) {
 			var spec = notes[n], label = "note " + (n + 1) + ": ";
 			if (!spec || typeof spec.pitch !== "number" || spec.pitch % 1 !== 0 || spec.pitch < 0 || spec.pitch > 127) { errors.push(label + "pitch must be an integer 0-127"); continue; }
 			if (typeof spec.length !== "number" || !(spec.length > 0)) { errors.push(label + "length must be > 0 beats"); continue; }
 			if (typeof spec.beat !== "number" || spec.beat < 0) { errors.push(label + "beat must be >= 0"); continue; }
+			if (partLength !== null && base + spec.beat + spec.length > partLength + 0.001) { errors.push(label + "ends after the part"); continue; }
 			var note = mf.createEvent("Note");
 			if (!note) { errors.push(label + "could not create a note"); continue; }
 			var vel = typeof spec.velocity === "number" ? Math.max(1, Math.min(127, spec.velocity)) : 100;
@@ -492,6 +504,7 @@ mtoOps.addNotes = function (context, op) {
 			added++;
 		}
 	} finally {
+		if (mtoFn(fns, "endMultiple")) fns.endMultiple(false);
 		mf.executeImmediately = false;
 	}
 	return { track: op.track, part: part.name, added: added, errors: errors };

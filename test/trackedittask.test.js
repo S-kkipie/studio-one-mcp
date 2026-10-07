@@ -280,3 +280,59 @@ test('addNotes: a MusicFunctions without modifyPitch is an error and adds nothin
   assert.match(t.result().results[0].error, /MusicFunctions are not available/);
   assert.equal(s.notes.length, 0);
 });
+
+test('addNotes: all notes are one undo step (begin/end around the loop), even for a bad note', () => {
+  const { s } = runKeys([{ op: 'addNotes', track: 'Keys', at: 4, notes: [{ pitch: 60, beat: 0, length: 1 }, { pitch: 999, beat: 0, length: 1 }, { pitch: 62, beat: 1, length: 1 }] }]);
+  assert.deepEqual(s.log.map(([k]) => k), ['begin', 'end']);
+  assert.equal(s.notes.length, 2);
+});
+
+test('addNotes: ends the undo group when a MusicFunctions call throws', () => {
+  const t = load();
+  const s = keysSong();
+  const root = s.context.functions.root;
+  const prev = root.createFunctions;
+  root.createFunctions = (n) => { const m = prev(n); if (n === 'MusicFunctions') m.modifyPitch = () => { throw new Error('boom'); }; return m; };
+  t.request([{ op: 'addNotes', track: 'Keys', at: 4, notes: [{ pitch: 60, beat: 0, length: 1 }] }]);
+  try { t.task.performEdit(s.context); } catch { /* the task may let it out */ }
+  assert.deepEqual(s.log.map(([k]) => k), ['begin', 'end']);
+});
+
+// A second part on Keys: parts at 4-8 s (Keys) and 4-6 s (Short), and one at 4-12 s (Long).
+function addPart(s, name, from, to) {
+  const t = (sec) => ({ seconds: sec, musical: sec * 2, as: (f) => (f === 2 ? sec * 2 : sec) });
+  const notes = [];
+  const part = { name, startTime: t(from), endTime: t(to), timeFormat: 2, notes, createSequenceIterator: () => ({ done: () => true, next: () => null }) };
+  s.tracks.find((x) => x.name === 'Keys').events.push(part);
+  return part;
+}
+
+test('addNotes with end: prefers the part that covers the range; among those, the one ending latest', () => {
+  const t = load();
+  const s = keysSong();
+  addPart(s, 'Short', 4, 6);
+  const long = addPart(s, 'Long', 4, 12);
+  addPart(s, 'Mid', 4, 10);
+  t.request([{ op: 'addNotes', track: 'Keys', at: 4, end: 9, notes: [{ pitch: 60, beat: 0, length: 1 }] }]);
+  t.task.performEdit(s.context);
+  assert.equal(t.result().results[0].part, 'Long');
+  assert.equal(long.notes.length, 1);
+  assert.equal(s.notes.length, 0);
+});
+
+test('addNotes with end: falls back to the latest-ending part at `at` when none covers the range', () => {
+  const t = load();
+  const s = keysSong();
+  addPart(s, 'Short', 4, 6);
+  t.request([{ op: 'addNotes', track: 'Keys', at: 4, end: 20, notes: [{ pitch: 60, beat: 0, length: 1 }] }]);
+  t.task.performEdit(s.context);
+  assert.equal(t.result().results[0].part, 'Keys');
+});
+
+test('addNotes: a note that runs past the part end is an error and is skipped', () => {
+  // the part is 4 s long = 8 beats at 120 bpm; at = 4 → base 0
+  const { results, s } = runKeys([{ op: 'addNotes', track: 'Keys', at: 4, notes: [{ pitch: 60, beat: 6, length: 2 }, { pitch: 62, beat: 7, length: 2 }, { pitch: 64, beat: 8, length: 1 }] }]);
+  assert.equal(results[0].added, 1);
+  assert.deepEqual(results[0].errors, ['note 2: ends after the part', 'note 3: ends after the part']);
+  assert.deepEqual(s.notes.map((n) => n.pitch), [60]);
+});
