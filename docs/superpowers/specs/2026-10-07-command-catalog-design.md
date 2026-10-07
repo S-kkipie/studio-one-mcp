@@ -43,7 +43,7 @@ src/commands/
   packages.js    readPackage(file) → Map<name, Buffer>   (directory + zlib; pure)
   schemas.js     extractEditTaskSchemas(installDir) → { [classID]: { task, args:[{name,type,min,max,default,choices?,presets?}] } }
   macros.js      readMacroExamples(dirs) → { "Cat/Name": [{ title, args:{…} }] }
-  catalog.js     buildCatalog({ live, schemas, examples }) → catalog; load/save ~/.studio-one-mcp/commands/<s1version>.json
+  catalog.js     buildCatalog({ live, schemas, examples }) → catalog; load/save ~/.studio-one-mcp/commands/catalog.json
   search.js      searchCommands(catalog, query, { limit }) → ranked [{ command, displayName, args, score }]
   synonyms.js    small curated Spanish/English synonym map (transponer↔transpose, cuantizar↔quantize, pista↔track, …)
   run.js         normalizeArgs(entry, args) → flat [k, v, …]; validation + enum-label mapping
@@ -56,7 +56,7 @@ src/commands/
   - `{ command: "Cat/Name", category, name, displayName, displayCategory, args: [...], variableArgs: bool, examples: [...], source: ["live","script","macro"] }`
   - Declared argument names (`arguments`) become `args` of type `"unknown"` unless the script or macros give more.
   - Arguments seen only in macros are added with their observed values as examples.
-- **Cache:** built on first use (or `refresh: true` / `cmd refresh`) and keyed by the Studio One version from `live_status`.
+- **Cache:** one file, `~/.studio-one-mcp/commands/catalog.json` (`{ schema, builtAt, install, live: bool, commands, warnings }`). It is built on first use, rebuilt by `refresh: true` / `cmd refresh`, and rebuilt automatically when it is older than 24 h, or was built without live data, and Studio One answers.
   - Building takes a single `listCommands` call (~1–2 s) plus offline parsing.
   - If Studio One is not running, a cached catalog is still searchable.
 - **Search:**
