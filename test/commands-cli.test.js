@@ -54,9 +54,12 @@ test('run: usage error, not executed, executed', async () => {
   assert.equal(await runCmd(['run', 'Transport/Start'], { call: t.call, getCatalog, out: t.out }), 1);
   assert.match(t.logs.join('\n'), /not executed/);
   let payload;
-  t = mk(async (_m, p) => { payload = p; return { executed: true }; });
+  t = mk(async (_m, p) => { payload = p; return { enabled: true }; });
   assert.equal(await runCmd(['run', 'Musical', 'Functions/Transpose', '--Mode', 'Set all to', '--AddValue', '5', '--check'], { call: t.call, getCatalog, out: t.out }), 0);
   assert.equal(payload.checkOnly, true);
+  assert.match(t.logs.join('\n'), /^enabled: true/, '--check only reports, it never says executed');
+  t = mk(async () => ({ executed: true }));
+  assert.equal(await runCmd(['run', 'Transport/Start'], { call: t.call, getCatalog, out: t.out }), 0);
   assert.match(t.logs.join('\n'), /^executed/);
 });
 
