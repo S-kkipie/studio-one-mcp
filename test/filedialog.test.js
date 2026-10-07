@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fillFileDialog, snapshotDialogs, cancelPresetDialogs, runScript, DIALOG_SCRIPT } from '../src/plugins/filedialog.js';
 
-const SCRIPT = fs.readFileSync(DIALOG_SCRIPT, 'utf8');
+// Normalise line endings: git may check the script out with CRLF (core.autocrlf).
+const SCRIPT = fs.readFileSync(DIALOG_SCRIPT, 'utf8').replace(/\r\n/g, '\n');
 const base = { pid: 4242, exclude: [65552, 131090] };
 const win = { platform: 'win32' };
 
