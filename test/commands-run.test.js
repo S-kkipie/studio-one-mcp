@@ -53,3 +53,9 @@ test('choices and bool strictness', () => {
 test('duplicate canonical keys throw', () => {
   assert.throws(() => normalizeArgs(T, { mode: 0, MODE: 1 }), /duplicate argument Mode/);
 });
+
+test('preset labels from the dialog map to their values', () => {
+  const Q = { command: 'Musical Functions/Quantize Notes', args: [{ name: 'Base', type: 'float', min: 0, max: 4, presets: [{ value: 0.25, label: '1/16' }, { value: 0.5, label: '1/8' }] }] };
+  assert.deepEqual(normalizeArgs(Q, { Base: '1/16' }).flat, ['Base', 0.25]);
+  assert.throws(() => normalizeArgs(Q, { Base: '1/7' }), /Base must be a number or one of: 1\/16, 1\/8/);
+});

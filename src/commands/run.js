@@ -40,8 +40,17 @@ function normalizeValue(arg, value) {
     throw oneOf();
   }
   if (arg.type === 'int' || arg.type === 'float') {
+    if (typeof value === 'string' && arg.presets?.length && Number.isNaN(Number(value))) {
+      // A preset button's label from the dialog, e.g. Base "1/16" or AddValue "+1 Oct".
+      const want = value.trim().toLowerCase();
+      const preset = arg.presets.find((p) => p.label.trim().toLowerCase() === want);
+      if (preset) value = preset.value;
+    }
     if (typeof value === 'string') {
-      if (value.trim() === '' || Number.isNaN(Number(value))) throw new Error(`${arg.name} must be a number`);
+      if (value.trim() === '' || Number.isNaN(Number(value))) {
+        const named = arg.presets?.length ? ` or one of: ${arg.presets.map((p) => p.label).join(', ')}` : '';
+        throw new Error(`${arg.name} must be a number${named}`);
+      }
       value = Number(value);
     }
     if (typeof value === 'number') {

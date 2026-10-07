@@ -57,3 +57,11 @@ test('a query that names the whole command outranks longer commands containing i
   ] };
   assert.equal(searchCommands(c, 'transponer')[0].command, 'Musical Functions/Transpose');
 });
+
+test('every query word found somewhere adds a bonus (category + name)', () => {
+  const c = { commands: [
+    { command: 'Marker/Recall Marker', category: 'Marker', name: 'Recall Marker', displayCategory: 'Marcador', displayName: 'Recuperar marcador', args: [] },
+    { command: 'Marker/Insert Named', category: 'Marker', name: 'Insert Named', displayCategory: 'Marcador', displayName: 'Insertar nombrado', args: [{ name: 'Name', type: 'unknown' }] },
+  ] };
+  assert.equal(searchCommands(c, 'agregar marcador con nombre')[0].command, 'Marker/Insert Named');
+});

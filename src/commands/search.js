@@ -43,6 +43,9 @@ function scoreEntry(entry, rawQuery, foldedQuery, tokens) {
     return content.length > 0 && content.every((w) => tokens.some((t) => hitBy(t, [w])));
   };
   if (covered(nameW) || covered(dispW)) score += 4;
+  // Every query word found somewhere ("marker named" → Marker/Insert Named).
+  const anywhere = [...nameW, ...dispW, ...catW, ...argW];
+  if (tokens.length > 1 && tokens.every((t) => hitBy(t, anywhere))) score += 4;
   if (foldedQuery.length >= 4 && (fold(entry.name).includes(foldedQuery) || fold(entry.displayName).includes(foldedQuery))) score += 5;
   return score;
 }
