@@ -33,7 +33,7 @@ async function restoreSelection(call, names) {
 }
 
 // Insert Instrument Part drops a one-bar part at a fixed spot that has nothing to do
-// with the playhead or the loop range (seen on Studio One 7.2.3: the spot where the
+// with the playhead or the loop range (seen on Studio One 7.2.3: it appears to be where the
 // playhead was when Studio One started). So: insert, find the part that appeared (a
 // diff of the track's events), then move it to the bar and resize it. There is no
 // clean way to delete one event, so a failure after the insert says where the stray

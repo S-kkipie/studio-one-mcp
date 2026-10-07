@@ -496,7 +496,7 @@ server.tool(
 
 server.tool(
   'live_write_chords',
-  'Write a chord progression on an instrument track in the running Studio One from bar `bar`. Progression like "Cm7 | Ab | Eb Bb" (| separates bars; several chords in a bar share it) or "C G Am F" (one per bar). Chords: C, Cm, Cdim, Caug, Csus2, Csus4, C6, Cm6, C7, Cmaj7, Cm7, Cm7b5, Cdim7, C9, Cmaj9, Cm9, Cadd9, slash bass C/E. Voicing close|open|drop2, octave of the root (3 = middle C), rhythm sustain|quarters|eighths|arp_up|arp_down. 4/4. One live_undo per call.',
+  'Write a chord progression on an instrument track in the running Studio One from bar `bar`. Progression like "Cm7 | Ab | Eb Bb" (| separates bars; several chords in a bar share it) or "C G Am F" (one per bar). Chords: C, Cm, Cdim, Caug, Csus2, Csus4, C6, Cm6, C7, Cmaj7, Cm7, Cm7b5, Cdim7, C9, Cmaj9, Cm9, Cadd9, slash bass C/E. Voicing close|open|drop2, octave of the root (3 = middle C), rhythm sustain|quarters|eighths|arp_up|arp_down. 4/4. Undo with live_undo (check with live_notes); a part it created takes two more steps to remove.',
   {
     track: z.string(),
     bar: z.number().int(),
@@ -512,7 +512,7 @@ server.tool(
 
 server.tool(
   'live_write_drums',
-  'Write a drum pattern on an instrument track (a drum instrument such as Impact) in the running Studio One from bar `bar`, repeated for `bars` bars. One string per lane: x = hit, X = accent, . = rest, spaces and | ignored; 16 steps = one bar of 16ths by default. Lanes (General MIDI): kick, rim, snare, clap, closed_hat (hat), pedal_hat, open_hat, low_tom, mid_tom, high_tom, crash, ride, or a MIDI note number. Example: { kick: "x...x...x...x...", snare: "....x.......x...", hat: "x.x.x.x.x.x.x.x." }. 4/4. One live_undo per call.',
+  'Write a drum pattern on an instrument track (a drum instrument such as Impact) in the running Studio One from bar `bar`, repeated for `bars` bars. One string per lane: x = hit, X = accent, . = rest, spaces and | ignored; 16 steps = one bar of 16ths by default. Lanes (General MIDI): kick, rim, snare, clap, closed_hat (hat), pedal_hat, open_hat, low_tom, mid_tom, high_tom, crash, ride, or a MIDI note number. Example: { kick: "x...x...x...x...", snare: "....x.......x...", hat: "x.x.x.x.x.x.x.x." }. 4/4. Undo with live_undo (check with live_notes); a part it created takes two more steps to remove.',
   {
     track: z.string(),
     bar: z.number().int(),
