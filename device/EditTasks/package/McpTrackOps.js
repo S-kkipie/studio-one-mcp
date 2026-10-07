@@ -452,7 +452,7 @@ mtoOps.addNotes = function (context, op) {
 	if (t.error) return t;
 	var root = context.functions ? context.functions.root : null;
 	var mf = mtoFn(root, "createFunctions") ? root.createFunctions("MusicFunctions") : null;
-	if (!mtoFn(mf, "createEvent") || !mtoFn(mf, "insertEvent") || !mtoFn(mf, "moveEvent")) return { error: "MusicFunctions are not available" };
+	if (!mtoFn(mf, "createEvent") || !mtoFn(mf, "insertEvent") || !mtoFn(mf, "moveEvent") || !mtoFn(mf, "modifyPitch") || !mtoFn(mf, "modifyVelocity") || !mtoFn(mf, "resizeEvent")) return { error: "MusicFunctions are not available" };
 	var at = typeof op.at === "number" ? op.at : 0;
 	var list = mtoEvents(t.track), part = null;
 	for (var i = 0; i < list.length; i++) {
@@ -467,22 +467,25 @@ mtoOps.addNotes = function (context, op) {
 	var base = anchor - partStart;
 	var notes = op.notes || [], added = 0, errors = [];
 	mf.executeImmediately = true;
-	for (var n = 0; n < notes.length; n++) {
-		var spec = notes[n], label = "note " + (n + 1) + ": ";
-		if (!spec || typeof spec.pitch !== "number" || spec.pitch % 1 !== 0 || spec.pitch < 0 || spec.pitch > 127) { errors.push(label + "pitch must be an integer 0-127"); continue; }
-		if (typeof spec.length !== "number" || !(spec.length > 0)) { errors.push(label + "length must be > 0 beats"); continue; }
-		if (typeof spec.beat !== "number" || spec.beat < 0) { errors.push(label + "beat must be >= 0"); continue; }
-		var note = mf.createEvent("Note");
-		if (!note) { errors.push(label + "could not create a note"); continue; }
-		var vel = typeof spec.velocity === "number" ? Math.max(1, Math.min(127, spec.velocity)) : 100;
-		mf.insertEvent(part, note);
-		mf.modifyPitch(note, spec.pitch);
-		mf.modifyVelocity(note, vel / 127);
-		if (mtoFn(mf, "freezeVelocity")) mf.freezeVelocity(note);
-		mf.resizeEvent(note, spec.length);
-		mf.moveEvent(note, base + spec.beat);
-		added++;
+	try {
+		for (var n = 0; n < notes.length; n++) {
+			var spec = notes[n], label = "note " + (n + 1) + ": ";
+			if (!spec || typeof spec.pitch !== "number" || spec.pitch % 1 !== 0 || spec.pitch < 0 || spec.pitch > 127) { errors.push(label + "pitch must be an integer 0-127"); continue; }
+			if (typeof spec.length !== "number" || !(spec.length > 0)) { errors.push(label + "length must be > 0 beats"); continue; }
+			if (typeof spec.beat !== "number" || spec.beat < 0) { errors.push(label + "beat must be >= 0"); continue; }
+			var note = mf.createEvent("Note");
+			if (!note) { errors.push(label + "could not create a note"); continue; }
+			var vel = typeof spec.velocity === "number" ? Math.max(1, Math.min(127, spec.velocity)) : 100;
+			mf.insertEvent(part, note);
+			mf.modifyPitch(note, spec.pitch);
+			mf.modifyVelocity(note, vel / 127);
+			if (mtoFn(mf, "freezeVelocity")) mf.freezeVelocity(note);
+			mf.resizeEvent(note, spec.length);
+			mf.moveEvent(note, base + spec.beat);
+			added++;
+		}
+	} finally {
+		mf.executeImmediately = false;
 	}
-	mf.executeImmediately = false;
 	return { track: op.track, part: part.name, added: added, errors: errors };
 };

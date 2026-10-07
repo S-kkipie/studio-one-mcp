@@ -260,3 +260,15 @@ test('addNotes: no part at that position, unknown track', () => {
   assert.match(runKeys([{ op: 'addNotes', track: 'Keys', at: 9, notes: [{ pitch: 60, beat: 0, length: 1 }] }]).results[0].error, /no instrument part on Keys at 9 s/);
   assert.match(runKeys([{ op: 'addNotes', track: 'Nope', at: 4, notes: [] }]).results[0].error, /no track named Nope/);
 });
+
+test('addNotes: a MusicFunctions without modifyPitch is an error and adds nothing', () => {
+  const t = load();
+  const s = keysSong();
+  const root = s.context.functions.root;
+  const prev = root.createFunctions;
+  root.createFunctions = (n) => { const m = prev(n); if (n === 'MusicFunctions') delete m.modifyPitch; return m; };
+  t.request([{ op: 'addNotes', track: 'Keys', at: 4, notes: [{ pitch: 60, beat: 0, length: 1 }] }]);
+  t.task.performEdit(s.context);
+  assert.match(t.result().results[0].error, /MusicFunctions are not available/);
+  assert.equal(s.notes.length, 0);
+});
