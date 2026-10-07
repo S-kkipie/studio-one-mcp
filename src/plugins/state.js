@@ -140,6 +140,39 @@ export function packExport(container, raw) {
   return { ext: '.preset', buf: Buffer.from(zipSync({ [data]: new Uint8Array(raw), 'metainfo.xml': strToU8(meta) })) };
 }
 
+// A preset file found on disk -> { ext, buf } that Load Preset File can take for the target, without
+// touching anything but the plug-in itself:
+//  - an instrument always gets a synth-only .preset (its load dialog takes *.instrument;*.preset, and an
+//    .instrument bundle would rebuild the channel's inserts): an .instrument is cut down to its synth
+//    part; a loose .vstpreset / .fxpreset is wrapped;
+//  - an insert takes .vstpreset and .preset as they are (its dialog takes *.vstpreset;*.preset); a
+//    loose .fxpreset is wrapped; an .instrument is refused.
+// `cls` ({ cid, name }) fills the metainfo of a wrapped file.
+export function loadablePreset(ext, buf, { instrument = false, cls = {} } = {}) {
+  const e = String(ext || '').toLowerCase();
+  // A .preset holding several parts (presetparts.xml) is a bundle too.
+  const zip = e === '.instrument' || e === '.preset' ? unzipSync(new Uint8Array(buf)) : null;
+  if (e === '.instrument' || (zip && zip['presetparts.xml'])) {
+    if (!instrument) throw new Error(`an instrument preset bundle (${e}) can only go on an instrument`);
+    const part = mainPart(zip['presetparts.xml'] ? strFromU8(zip['presetparts.xml']) : '');
+    if (!part) throw new Error('the .instrument preset has no synth part (presetparts.xml)');
+    const dataFile = metaAttr(part, 'Preset:DataFile');
+    if (!dataFile || !zip[dataFile]) throw new Error(`the .instrument preset has no synth data${dataFile ? ` (${dataFile})` : ''}`);
+    const meta = zip['metainfo.xml'] ? strFromU8(zip['metainfo.xml']) : null;
+    return packExport({ kind: 'instrument', meta, dataFile, mime: metaAttr(part, 'Preset:DataMimeType') }, zip[dataFile]);
+  }
+  if (e === '.preset') return { ext: '.preset', buf: Buffer.from(buf) };
+  if (e === '.vstpreset' && !instrument) return { ext: '.vstpreset', buf: Buffer.from(buf) };
+  if (e !== '.vstpreset' && e !== '.fxpreset') throw new Error(`unsupported preset file type ${ext}`);
+  const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const meta = '<?xml version="1.0" encoding="UTF-8"?>\n<MetaInformation>\n' +
+    (cls.cid ? `\t<Attribute id="Class:ID" value="${esc(cls.cid)}"/>\n` : '') +
+    (cls.name ? `\t<Attribute id="Class:Name" value="${esc(cls.name)}"/>\n` : '') +
+    (instrument ? '\t<Attribute id="Class:Category" value="AudioSynth"/>\n' : '') +
+    '</MetaInformation>';
+  return packExport({ kind: 'instrument', meta, dataFile: `data${e}`, mime: e === '.fxpreset' ? 'audio/x-fxpreset' : null }, buf);
+}
+
 function stateOf(raw) {
   const p = parseVstPreset(raw);
   const comp = p.chunks.find((c) => c.id === 'Comp');

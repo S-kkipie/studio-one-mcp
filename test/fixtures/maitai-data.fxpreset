@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AudioEffectPreset cid="{B625F134-4485-4A50-A3C8-C9CF0C5495E1}" version="2">
+	<Attributes x:id="ComponentData" bypass="0" qualityLevel="1" voiceLimit="6" monophone="0" enableGlide="0">
+		<Attributes x:id="glide" glideTime="0.10000000149011612"/>
+		<Attributes x:id="osc1" active="1" type="1" octaverange="2" halftone="0" tune="0" subosc_level="0"
+		            pulsewidth="1" stereowidth="0" sync="0" random="1">
+			<Attributes x:id="amp" gain="0.5" pan="0.5"/>
+		</Attributes>
+		<Attributes x:id="filter" active="1" type="0" clip="0" drive="0.14999999105930328" cutoff="20" resonance="0.10999998450279236"
+		            keyscaling="1" velo_to_cutoff="0.39999961853027344" compress="0"/>
+		<Attributes x:id="masterGain" gain="1"/>
+		<Attributes x:id="gui" showmodfx="1" showkeyboard="1"/>
+	</Attributes>
+</AudioEffectPreset>

@@ -135,44 +135,77 @@ export async function trackEdit(call, { track, action, name, color, to, folder, 
   }
 }
 
+// Adding a plug-in instance (an insert, an instrument, an FX channel) loads the plug-in: the answer can
+// take longer than the bridge's usual 5 s, and an answer that times out may still have done it. So these
+// calls get INSTANCE_TIMEOUT_MS, and after a thrown call the song is read again before reporting.
+const slow = () => ({ timeoutMs: INSTANCE_TIMEOUT_MS });
+const lateNote = (e) => `Studio One did not answer in time (${e.message}), but the song shows the change: it was made`;
+
 // An instrument track with a new instance of an instrument (live_plugins with
 // kind instrument lists them). One undo step removes both (checked on 5.5.2).
 // The instrument's mixer channel (the label live_inserts and live_add_plugin take) is not the track's
 // channel label, so it is found as the one channel that is new after the add.
 export async function addInstrumentTrack(call, { instrument, name }) {
-  const labels = async () => (await call('inserts', {})).map((c) => c.channel);
+  const labels = async (opts) => (await (opts ? call('inserts', {}, opts) : call('inserts', {}))).map((c) => c.channel);
   const before = await labels().catch(() => null);
-  const r = await trackTask(call, { op: 'addInstrumentTrack', instrument, name });
-  let mixerChannel = null;
-  if (before) {
+  const freshOf = (after) => {
     const left = [...before];
-    const fresh = (await labels().catch(() => [])).filter((l) => {
+    return after.filter((l) => {
       const i = left.indexOf(l);
       if (i < 0) return true;
       left.splice(i, 1);
       return false;
     });
+  };
+  let r;
+  let warning;
+  let after = null;
+  try {
+    r = await trackTask(call, { op: 'addInstrumentTrack', instrument, name }, { timeoutMs: INSTANCE_TIMEOUT_MS });
+  } catch (e) {
+    // The rack decides: exactly one new instrument channel means the track was added.
+    after = before ? await labels(slow()).catch(() => null) : null;
+    if (!after || freshOf(after).length !== 1) throw e;
+    r = { track: null, instrument, channel: null, connected: null };
+    warning = `${lateNote(e)}; check the track name with live_tracks`;
+  }
+  let mixerChannel = null;
+  if (before) {
+    const fresh = freshOf(after ?? await labels().catch(() => []));
     if (fresh.length === 1) mixerChannel = fresh[0];
   }
-  return { track: r.track, instrument: r.instrument, channel: r.channel, mixerChannel, connected: r.connected, note: 'mixerChannel is the instrument\'s channel for live_inserts, live_add_plugin and live_plugin_params; it may be null (the new channel could not be told apart): then find it with live_inserts. One live_undo removes the track and the instrument.' };
+  return { track: r.track, instrument: r.instrument, channel: r.channel, mixerChannel, connected: r.connected, ...(warning ? { warning } : {}), note: "mixerChannel is the instrument's channel for live_inserts, live_add_plugin and live_plugin_params; it may be null (the new channel could not be told apart): then find it with live_inserts. One live_undo removes the track and the instrument." };
 }
+
+const rackOf = async (call, channel, opts) => {
+  const [rack] = await (opts ? call('inserts', { channel }, opts) : call('inserts', { channel }));
+  return rack ? rack.inserts : null;
+};
 
 // A plug-in on a channel's inserts, through DeviceEditFunctions like Studio One's
 // own Insert FX task: unlike the insert folder's own insertDeviceClass, this is
 // on the undo stack.
 export async function addPlugin(call, { channel, plugin }) {
+  const before = await rackOf(call, channel).catch(() => null);
   let r;
+  let warning;
   try {
-    r = await trackTask(call, { op: 'addPlugin', channel, plugin });
+    r = await trackTask(call, { op: 'addPlugin', channel, plugin }, { timeoutMs: INSTANCE_TIMEOUT_MS });
   } catch (e) {
     // Only effects can go on inserts; an instrument name is not found among them.
-    if (!/^no plug-in named /.test(String(e.message))) throw e;
-    const inst = await call('plugins', { kind: 'instrument', filter: plugin }).catch(() => null);
-    if (inst?.plugins?.includes(plugin)) throw new Error(`${plugin} is an instrument, not an insert effect: add it with live_add_instrument_track`);
-    throw e;
+    if (/^no plug-in named /.test(String(e.message))) {
+      const inst = await call('plugins', { kind: 'instrument', filter: plugin }).catch(() => null);
+      if (inst?.plugins?.includes(plugin)) throw new Error(`${plugin} is an instrument, not an insert effect: add it with live_add_instrument_track`);
+      throw e;
+    }
+    // The rack decides: one more insert, at the end, means it was added.
+    const after = before ? await rackOf(call, channel, slow()).catch(() => null) : null;
+    if (!after || after.length !== before.length + 1) throw e;
+    r = { added: after[after.length - 1].name };
+    warning = lateNote(e);
   }
-  const [rack] = await call('inserts', { channel });
-  return { channel, added: r.added, inserts: rack ? rack.inserts : null, note: 'One live_undo removes it.' };
+  const inserts = await rackOf(call, channel);
+  return { channel, added: r.added, inserts, ...(warning ? { warning } : {}), note: 'One live_undo removes it.' };
 }
 
 // An effect on a channel's sends: Studio One makes an FX channel with the plug-in
@@ -180,10 +213,22 @@ export async function addPlugin(call, { channel, plugin }) {
 // from scripts on 5.5.2, and this did not come off with one undo.
 export async function addFxSend(call, { channel, plugin }) {
   const before = new Set((await call('channels')).map((c) => c.label));
-  const r = await trackTask(call, { op: 'addFxSend', channel, plugin });
-  const fx = (await call('channels')).filter((c) => !before.has(c.label)).map((c) => c.label);
+  let r;
+  let warning;
+  let fx;
+  try {
+    r = await trackTask(call, { op: 'addFxSend', channel, plugin }, { timeoutMs: INSTANCE_TIMEOUT_MS });
+  } catch (e) {
+    // The mixer decides: a new channel means the FX channel was made.
+    const after = await call('channels', {}, slow()).catch(() => null);
+    fx = after ? after.filter((c) => !before.has(c.label)).map((c) => c.label) : [];
+    if (!fx.length) throw e;
+    r = { added: plugin };
+    warning = lateNote(e);
+  }
+  if (!fx) fx = (await call('channels')).filter((c) => !before.has(c.label)).map((c) => c.label);
   const [s] = await call('sends', { channel });
-  return { channel, plugin: r.added, fxChannel: fx[0] ?? null, sends: s ? s.sends : [], note: 'Not reliably undone by live_undo: remove the send and FX channel in Studio One, or mute the send with live_set_send.' };
+  return { channel, plugin: r.added, fxChannel: fx[0] ?? null, sends: s ? s.sends : [], ...(warning ? { warning } : {}), note: 'Not reliably undone by live_undo: remove the send and FX channel in Studio One, or mute the send with live_set_send.' };
 }
 
 // Presets of a plug-in class, insert (a class or one of its presets) at a slot, and

@@ -25,6 +25,20 @@ export function flattenNames(obj, prefix = '') {
   return out;
 }
 
+// Sections that are editor state, not parameters.
+const UI_SECTIONS = new Set(['gui']);
+
+// <Attributes x:id> tree -> dotted names: the x:id chain below the top element plus the attribute name.
+export function nestedNames(node, prefix) {
+  const out = Object.keys(node.attrs).filter((k) => k !== 'x:id').map((k) => prefix + k);
+  for (const c of node.children) {
+    const id = c.attrs['x:id'];
+    if (c.tag !== 'Attributes' || !id || UI_SECTIONS.has(id)) continue;
+    out.push(...nestedNames(c, `${prefix}${id}.`));
+  }
+  return out;
+}
+
 // Names and class from one .preset file, or null if it is not one we can read.
 export function readPreset(path) {
   let entries;
@@ -47,8 +61,19 @@ export function readPreset(path) {
       return null;
     }
   } else {
-    const root = parseXml(data);
+    let root;
+    try {
+      root = parseXml(data);
+    } catch {
+      return null;
+    }
     for (const n of walk(root)) if (n.attrs['x:id'] === 'ParameterData') names.push(...Object.keys(n.attrs).filter((k) => k !== 'x:id'));
+    // Instruments (Mai Tai…) nest their parameters: <Attributes x:id="ComponentData" voiceLimit=..>
+    // <Attributes x:id="filter" cutoff=../> -> voiceLimit, filter.cutoff (the names findParameter takes).
+    if (!names.length) {
+      const top = [...walk(root)].find((n) => n.attrs['x:id'] === 'ComponentData');
+      if (top) names.push(...nestedNames(top, ''));
+    }
   }
   return { classId: attr('Class:ID'), className: attr('Class:Name'), names };
 }
@@ -132,4 +157,26 @@ function namesOf(pluginName, { roots = presetRoots(), maps = remoteMapFiles(), m
     }
   }
   return { names: [...names], sources };
+}
+
+// A plug-in's class from its own presets (<root>/<vendor>/<name>/**): { classId, className } or null.
+// Studio One's plug-in cache leaves out its built-in instruments (Mai Tai, Impact…); their presets name them.
+export function presetClass(pluginName, { roots = presetRoots() } = {}) {
+  const names = [String(pluginName)];
+  const base = names[0].replace(/\s+\d+$/, '');
+  if (base !== names[0]) names.push(base);
+  for (const name of names) {
+    for (const root of roots) {
+      if (!existsSync(root)) continue;
+      for (const vendor of readdirSync(root)) {
+        let tried = 0;
+        for (const p of presetFiles(join(root, vendor, name))) {
+          if (++tried > 4) break;
+          const preset = readPreset(p);
+          if (preset?.classId && (!preset.className || preset.className === name)) return { classId: preset.classId, className: preset.className || name };
+        }
+      }
+    }
+  }
+  return null;
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaInformation>
+	<Attribute id="Class:ID" value="{B625F134-4485-4A50-A3C8-C9CF0C5495E1}"/>
+	<Attribute id="Class:Name" value="Mai Tai"/>
+	<Attribute id="Class:Category" value="AudioSynth"/>
+	<Attribute id="Class:SubCategory" value="(Native)/Synth"/>
+	<Attribute id="Class:Vendor" value="PreSonus"/>
+	<Attribute id="DeviceSlot:deviceName" value="Mai Tai"/>
+	<Attribute id="DeviceSlot:deviceUID" value="{51ADEDB3-CFD0-4EB2-A267-7A2BBC1437E2}"/>
+	<Attribute id="DeviceSlot:slotUID" value="{DD123146-AD58-480E-A7A0-211DF09C9919}"/>
+	<Attribute id="Document:Description" value=""/>
+	<Attribute id="Preset:SubFolder" value=""/>
+	<Attribute id="Document:Title" value="default"/>
+	<Attribute id="Document:MimeType" value="application/x-presonus-preset"/>
+	<Attribute id="Document:Creator" value="PreSonus"/>
+	<Attribute id="Document:Generator" value="Studio One/3.0.0.32578"/>
+	<Attribute id="Preset:DataFile" value="data.fxpreset"/>
+	<Attribute id="Preset:DataMimeType" value="audio/x-fxpreset"/>
+</MetaInformation>

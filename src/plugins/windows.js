@@ -3,8 +3,9 @@
 import { execFile } from 'node:child_process';
 
 // Opens the slot's plug-in window and gives it the focus (bridge op, see BridgeComponent.js).
-export async function focusPlugin(call, { channel, slot }) {
-  return call('openPluginEditor', { channel, slot });
+// An instrument ({ instrument }) opens through its Device/Edit command.
+export async function focusPlugin(call, { channel, slot, instrument }) {
+  return call('openPluginEditor', instrument !== undefined ? { instrument } : { channel, slot });
 }
 
 // Only plug-in editor windows get WM_CLOSE: visible top-level windows of the Studio One process

@@ -54,7 +54,7 @@ test('exposes the song and live tools', async () => {
   const names = (await client.listTools()).tools.map((t) => t.name).sort();
   assert.deepEqual(names, [
     'live_add_bus', 'live_add_instrument_track', 'live_add_marker', 'live_add_plugin', 'live_add_send', 'live_add_track', 'live_arranger', 'live_bounce', 'live_bypass_insert', 'live_changes', 'live_channels', 'live_command', 'live_create_part', 'live_delete_marker',
-    'live_edit_events', 'live_edit_notes', 'live_eval', 'live_events', 'live_inserts', 'live_list_commands', 'live_macros', 'live_markers', 'live_meters', 'live_mix_snapshot', 'live_notes', 'live_plugin_params', 'live_plugin_presets', 'live_plugin_scan', 'live_plugin_snapshot', 'live_plugin_window', 'live_plugins', 'live_record', 'live_record_setup',
+    'live_edit_events', 'live_edit_notes', 'live_eval', 'live_events', 'live_inserts', 'live_instruments', 'live_list_commands', 'live_macros', 'live_markers', 'live_meters', 'live_mix_snapshot', 'live_notes', 'live_plugin_params', 'live_plugin_presets', 'live_plugin_scan', 'live_plugin_snapshot', 'live_plugin_window', 'live_plugins', 'live_record', 'live_record_setup',
     'live_redo', 'live_remove_plugin', 'live_rename_marker', 'live_run_macro', 'live_save', 'live_select_events', 'live_select_track', 'live_sends', 'live_set_automation',
     'live_set_channel', 'live_set_loop', 'live_set_plugin_param', 'live_set_send', 'live_set_transport', 'live_song', 'live_status', 'live_takes', 'live_tempo', 'live_time_signature', 'live_track_edit', 'live_track_state',
     'live_tracks', 'live_transport', 'live_undo', 'live_write_automation', 'live_write_chords', 'live_write_drums', 'live_write_notes',
@@ -157,5 +157,24 @@ test('live_set_plugin_param: one param with one value, or a changes batch, never
 test('live_plugin_window open needs channel and slot', async () => {
   const r = await call('live_plugin_window', { action: 'open' });
   assert.equal(r.isError, true);
-  assert.match(r.text, /open needs channel and slot/);
+  assert.match(r.text, /open needs channel and slot, or instrument/);
+});
+
+test('plug-in tools take an insert (channel + slot) or an instrument, exactly one', async () => {
+  const both = await call('live_plugin_params', { channel: 'X', slot: 0, instrument: 'Mai Tai' });
+  assert.equal(both.isError, true);
+  assert.match(both.text, /give either instrument, or channel and slot, not both/);
+  const half = await call('live_set_plugin_param', { channel: 'X', param: 'a', text: '1' });
+  assert.equal(half.isError, true);
+  assert.match(half.text, /needs both channel and slot/);
+  const none = await call('live_plugin_params', {});
+  assert.match(none.text, /give channel and slot .* or instrument/);
+  const presets = await call('live_plugin_presets', { action: 'list', instrument: 'Mai Tai', slot: 1 });
+  assert.match(presets.text, /not both/);
+  const tools = (await client.listTools()).tools;
+  for (const name of ['live_plugin_params', 'live_set_plugin_param', 'live_plugin_presets', 'live_plugin_window']) {
+    assert.ok(tools.find((t) => t.name === name).inputSchema.properties.instrument, `${name} takes instrument`);
+  }
+  const win = await call('live_plugin_window', { action: 'open' });
+  assert.match(win.text, /open needs channel and slot, or instrument/);
 });

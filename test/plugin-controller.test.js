@@ -115,7 +115,7 @@ test('getParams: native keeps its output shape plus backend and realtime; opaque
   assert.equal(o.backend, 'opaque');
   assert.deepEqual(o.params, []);
   assert.match(o.note, /live_plugin_presets/);
-  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover, pluginClass }), /no plug-in in slot 3 on Voc \(live_inserts lists the slots; an instrument itself is not in a slot/);
+  await assert.rejects(getParams(call, { channel: 'Voc', slot: 3 }, { catalog, discover, pluginClass }), /no plug-in in slot 3 on Voc \(live_inserts lists the slots; for an instrument itself give instrument instead/);
 });
 
 test('setParams native: one change keeps the bridge shape, a batch returns results', async () => {
@@ -191,8 +191,9 @@ test('stateChange: units must match the catalog label, words to booleans, normal
   assert.throws(() => stateChange('30000 Hz', hz), /Freq must be within 20\.\.20000 Hz; got 30000/);
   assert.throws(() => stateChange(-1, unit), /Amount must be within 0\.\.1; got -1/);
   assert.equal(stateChange('2 kHz', hz, { binary: true }), '2 kHz');
-  assert.equal(stateChange('Off'), false);
-  assert.equal(stateChange('on'), true);
+  assert.equal(stateChange('Off', { name: 'Gate', isBoolean: true }), false);
+  assert.equal(stateChange('on', { name: 'Gate', min: false, max: true }), true);
+  assert.equal(stateChange('true', { name: 'Mode', type: 'choice', choices: 2 }), true, 'a choice of two is on/off');
   assert.equal(stateChange('Clean Channel', undefined, { binary: true }), 'Clean Channel');
   assert.equal(stateChange(1, { min: false, max: true }), true);
   assert.equal(stateChange(1, { min: 0, max: 10 }), 1);
@@ -245,7 +246,7 @@ test('live_plugin_presets list: by slot or by plug-in name, through the class ID
   const byName = await pluginPresets(call, { plugin: 'Pro EQ' }, { classIdFor: (n) => ids[n] });
   assert.equal(byName.count, 2);
   await assert.rejects(pluginPresets(call, { plugin: 'Nope' }, { classIdFor: () => null }), /no class ID for Nope/);
-  await assert.rejects(pluginPresets(call, { action: 'list' }, { classIdFor: () => 'x' }), /give channel and slot, or plugin/);
+  await assert.rejects(pluginPresets(call, { action: 'list' }, { classIdFor: () => 'x' }), /give channel and slot, instrument, or plugin/);
 });
 
 test('live_plugin_presets load goes through the shared replace-slot flow', async () => {

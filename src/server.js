@@ -32,7 +32,7 @@ import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEm
 import { version } from './version.js';
 import { defaultCatalogDir } from './plugins/scan.js';
 import { loadCatalog, matchPlugin, searchCatalog, entryBackend, stateScaleOf, CATALOG_SCHEMA } from './plugins/catalog.js';
-import { getParams, setParams, pluginPresets, addPluginWithPreset, removePlugin, runScan } from './plugins/controller.js';
+import { getParams, setParams, pluginPresets, addPluginWithPreset, removePlugin, runScan, pluginTarget, instrumentsOverview } from './plugins/controller.js';
 import { focusPlugin, closePluginWindows } from './plugins/windows.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
@@ -579,56 +579,76 @@ server.tool(
   guard((a) => call('setSend', a)),
 );
 
-const PLUGIN_NOTE = 'Third-party plug-ins (state backend) are not realtime (a few seconds per call; batch changes). On Windows a read exports the plug-in\'s state through its own Export Preset and a change loads the edited state back through Load Preset File, in place: same instance, slot and bypass, and the song is NOT saved (Studio One\'s preset dialog flashes briefly). It is read-modify-write: a knob turned in the plug-in window during those seconds is overwritten. The result has inPlace: true, and unconfirmed lists changes that did not read back as asked. live_undo does not revert such a change (the load is not an undo step; an undo lands on an earlier edit): set the previous values instead. On other systems a read saves the song (File/Save) and reads the slot from it, and a change saves the song too and replaces the plug-in with a new instance carrying the new settings (same slot and bypass); do NOT use live_undo to revert that: it brings the old instance back next to the new one. Their values are in the units live_plugin_params shows (e.g. 0..100 %), converted to and from the saved state by the scan; a parameter whose conversion the scan could not verify shows value null with unverified: true and cannot be set. A preset load (live_plugin_presets) replaces the plug-in with a new instance: do NOT use live_undo to revert it either; load the previous preset instead. Plug-ins that hide their parameters from hosts (backend opaque) only support presets (live_plugin_presets). After installing plug-ins run live_plugin_scan (it needs `npm run scan:setup` once).';
+const PLUGIN_NOTE = 'Third-party plug-ins (state backend) are not realtime (a few seconds per call; batch changes). On Windows a read exports the plug-in\'s state through its own Export Preset and a change loads the edited state back through Load Preset File, in place: same instance, slot and bypass, and the song is NOT saved (Studio One\'s preset dialog flashes briefly). It is read-modify-write: a knob turned in the plug-in window during those seconds is overwritten. The result has inPlace: true, and unconfirmed lists changes that did not read back as asked. live_undo does not revert such a change (the load is not an undo step; an undo lands on an earlier edit): set the previous values instead. On other systems a read saves the song (File/Save) and reads the slot from it, and a change saves the song too and replaces the plug-in with a new instance carrying the new settings (same slot and bypass); do NOT use live_undo to revert that: it brings the old instance back next to the new one. Their values are in the units live_plugin_params shows (e.g. 0..100 %), converted to and from the saved state by the scan; a parameter whose conversion the scan could not verify shows value null with unverified: true and cannot be set. A preset load (live_plugin_presets) is in place on Windows when the preset file is found, otherwise (inserts only) it replaces the plug-in with a new instance: either way do NOT use live_undo to revert it; load the previous preset instead. Instruments (live_instruments) take instrument instead of channel + slot. Plug-ins that hide their parameters from hosts (backend opaque) only support presets (live_plugin_presets). After installing plug-ins run live_plugin_scan (it needs `npm run scan:setup` once).';
 
-server.tool(
-  'live_plugin_params',
-  `Parameters of one plug-in on a channel in the running Studio One (slot from live_inserts), with backend (native, state or opaque) and realtime. Native (PreSonus plug-ins): name, value, display text (e.g. "2.0:1", "-12.0 dB"), range and normalised value, live; names come from their presets and Studio One's remote-control map. State (scanned third-party plug-ins): name, key, value in the parameter's display units, label, range (choices for a choice list, whose value is its index). ${PLUGIN_NOTE} To read names Studio One answers to directly, pass them in \`params\`.`,
+// The plug-in a tool addresses: an insert (channel + slot) or an instrument, exactly one of them.
+const TARGET = {
+  channel: z.string().optional().describe('Channel label (with slot): a plug-in on the inserts, from live_inserts'),
+  slot: z.number().int().optional().describe('Insert slot (with channel), from live_inserts'),
+  instrument: z.string().optional().describe('Instead of channel + slot: an instrument, by name or component (InstNN) from live_instruments'),
+};
+const targeted = (shape, { optional = false } = {}) => z.object({ ...TARGET, ...shape }).superRefine((a, ctx) => {
+  try { pluginTarget(a, { optional }); } catch (e) { ctx.addIssue({ code: 'custom', message: e.message }); }
+});
+
+server.registerTool(
+  'live_instruments',
   {
-    channel: z.string(),
-    slot: z.number().int(),
-    filter: z.string().optional().describe('Only parameters whose name (or key) contains this (e.g. "comp", "gain")'),
-    params: z.array(z.string()).optional().describe('Exact native parameter names to read instead of the discovered ones'),
+    description: "The song's instruments in the running Studio One: instrument (the name live_plugin_params, live_set_plugin_param, live_plugin_presets and live_plugin_window take), component (Inst01…, also accepted), backend (native for PreSonus instruments; state or opaque for third-party ones, as for inserts), classId, and the instrument tracks that play each one. Tracks are mapped from the song's last save (best effort): tracks added or rerouted since then are listed in unmappedTracks.",
+    inputSchema: {},
+  },
+  guard(() => instrumentsOverview(call)),
+);
+
+server.registerTool(
+  'live_plugin_params',
+  {
+    description: `Parameters of one plug-in in the running Studio One: an insert (channel + slot from live_inserts) or an instrument (instrument, from live_instruments), with backend (native, state or opaque) and realtime. Native (PreSonus plug-ins and instruments): name, value, display text (e.g. "2.0:1", "-12.0 dB"), range and normalised value, live; names come from their presets and Studio One's remote-control map (instruments have dotted names such as filter.cutoff or masterGain.gain). State (scanned third-party plug-ins): name, key, value in the parameter's display units, label, range (choices for a choice list, whose value is its index). ${PLUGIN_NOTE} To read names Studio One answers to directly, pass them in \`params\`.`,
+    inputSchema: targeted({
+      filter: z.string().optional().describe('Only parameters whose name (or key) contains this (e.g. "comp", "gain")'),
+      params: z.array(z.string()).optional().describe('Exact native parameter names to read instead of the discovered ones'),
+    }),
   },
   guard((a) => getParams(call, a)),
 );
 
 const PARAM_VALUE = z.union([z.string(), z.number(), z.boolean(), z.object({ normalized: z.number() })]);
 
-server.tool(
+server.registerTool(
   'live_set_plugin_param',
-  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in the units live_plugin_params shows, e.g. "6 dB", "50 %" or "off"; a choice such as an amp type is its index, as live_plugin_params shows it), normalized (0..1; PreSonus plug-ins only) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized } (PreSonus only); for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
   {
-    channel: z.string(),
-    slot: z.number().int(),
-    param: z.string().optional(),
-    text: z.string().optional(),
-    normalized: z.number().optional(),
-    value: z.number().optional(),
-    changes: z.record(z.string(), PARAM_VALUE).optional().describe('Several parameters at once: { name or key: value }'),
+    description: `Set parameters of one plug-in in the running Studio One: an insert (channel + slot) or an instrument (instrument, from live_instruments); names or keys from live_plugin_params. One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in the units live_plugin_params shows, e.g. "6 dB" or "50 %", and on/off/true/false for on/off parameters only; a choice such as an amp type is its index, as live_plugin_params shows it), normalized (0..1; PreSonus plug-ins only) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized } (PreSonus only); for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
+    inputSchema: targeted({
+      param: z.string().optional(),
+      text: z.string().optional(),
+      normalized: z.number().optional(),
+      value: z.number().optional(),
+      changes: z.record(z.string(), PARAM_VALUE).optional().describe('Several parameters at once: { name or key: value }'),
+    }),
   },
-  guard(({ channel, slot, param, text, normalized, value, changes }) => {
+  guard(({ channel, slot, instrument, param, text, normalized, value, changes }) => {
+    const target = pluginTarget({ channel, slot, instrument });
     const given = [text, normalized, value].filter((v) => v !== undefined).length;
     if (changes) {
       if (param !== undefined || given) throw new Error('give either changes, or param with one of text, normalized or value');
-      return setParams(call, { channel, slot, changes });
+      return setParams(call, { ...target, changes });
     }
     if (param === undefined) throw new Error('give param (with one of text, normalized or value) or changes');
     if (given !== 1) throw new Error('give exactly one of text, normalized or value');
     const v = text !== undefined ? text : normalized !== undefined ? { normalized } : value;
-    return setParams(call, { channel, slot, changes: { [param]: v } });
+    return setParams(call, { ...target, changes: { [param]: v } });
   }),
 );
 
-server.tool(
+server.registerTool(
   'live_plugin_presets',
-  "Presets Studio One has indexed for a plug-in. list: any plug-in (PreSonus, third-party, and opaque ones too), for a slot (channel + slot) or by plug-in name; load: insert effects only, onto a slot. Load replaces the slot's plug-in with a new instance made from the preset at the same position (bypass kept; the old instance is removed only after the new one is in), which takes a moment and is not realtime. Do NOT use live_undo to revert a preset load: it brings the old instance back next to the new one. Load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
   {
-    action: z.enum(['list', 'load']),
-    channel: z.string().optional(),
-    slot: z.number().int().optional(),
-    plugin: z.string().optional().describe('For list without a slot: plug-in name as in live_plugins'),
-    preset: z.string().optional().describe('For load: exact preset name from list'),
+    description: "Presets Studio One has indexed for a plug-in: list for an insert (channel + slot), an instrument (instrument, from live_instruments) or a plug-in by name (plugin); load onto an insert or an instrument. On Windows a load finds the preset's file (Studio One's Presets folders, Documents/Studio One/Presets, VST3 preset folders) and loads it in place through the plug-in's own Load Preset File: same instance, slot and bypass, the song is not saved, Studio One's preset dialog flashes briefly (inPlace: true). An instrument only ever gets its synth's part of a preset: its channel's inserts stay as they are. If no file is found, an insert is replaced by a new instance made from the preset at the same position (bypass kept; inPlace: false), and an instrument load fails. Do NOT use live_undo to revert a preset load (an in-place load is not an undo step; after a replace it would bring the old instance back next to the new one): load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
+    inputSchema: targeted({
+      action: z.enum(['list', 'load']),
+      plugin: z.string().optional().describe('For list without a target: plug-in name as in live_plugins'),
+      preset: z.string().optional().describe('For load: exact preset name from list'),
+    }, { optional: true }),
   },
   guard((a) => pluginPresets(call, a)),
 );
@@ -642,13 +662,14 @@ server.tool(
 
 server.tool(
   'live_plugin_window',
-  'Open (and focus) the editor window of the plug-in in a slot, or close all plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only.',
-  { action: z.enum(['open', 'closeAll']), channel: z.string().optional(), slot: z.number().int().optional() },
-  guard(async ({ action, channel, slot }) => {
+  'Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close all insert plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only, and for insert windows only: close an instrument editor in Studio One.',
+  { action: z.enum(['open', 'closeAll']), channel: TARGET.channel, slot: TARGET.slot, instrument: TARGET.instrument },
+  guard(async ({ action, channel, slot, instrument }) => {
     if (action === 'open') {
-      if (channel === undefined || slot === undefined) throw new Error('open needs channel and slot');
-      return focusPlugin(call, { channel, slot });
+      if (instrument === undefined && (channel === undefined || slot === undefined)) throw new Error('open needs channel and slot, or instrument');
+      return focusPlugin(call, pluginTarget({ channel, slot, instrument }));
     }
+    if (instrument !== undefined) throw new Error('closeAll closes insert windows only (optionally of one channel)');
     if (process.platform !== 'win32') return { closed: [], note: 'closing plug-in windows is only supported on Windows' };
     return { closed: await closePluginWindows({ channel }) };
   }),

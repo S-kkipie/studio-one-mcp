@@ -1,7 +1,7 @@
 // Plug-in parameter names from presets and the remote-control map.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { zipSync, strToU8 } from 'fflate';
@@ -72,4 +72,25 @@ test('pluginParamNames: a second instance ("Pro EQ 2", e.g. after a preset load)
   assert.equal(r.plugin, 'Pro EQ');
   assert.equal(pluginParamNames('Pro EQ', { roots: [root], maps: [map] }).plugin, 'Pro EQ');
   assert.deepEqual(pluginParamNames('Some VST 2', { roots: [root], maps: [map] }).names, []);
+});
+
+// A real Mai Tai factory preset (default.preset, trimmed): instrument presets keep their parameters
+// as nested <Attributes x:id="..."> under ComponentData, not in one ParameterData element.
+const fixture = (f) => readFileSync(new URL(`./fixtures/${f}`, import.meta.url), 'utf8');
+
+test('readPreset: an instrument preset (nested x:id sections) gives dotted names from the x:id chain', () => {
+  const root = mkdtempSync(join(tmpdir(), 's1presets-'));
+  const p = join(root, 'PreSonus', 'Mai Tai', 'default.preset');
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, zipSync({ 'metainfo.xml': strToU8(fixture('maitai-metainfo.xml')), 'data.fxpreset': strToU8(fixture('maitai-data.fxpreset')) }));
+  const r = readPreset(p);
+  assert.equal(r.className, 'Mai Tai');
+  assert.equal(r.classId, '{B625F134-4485-4A50-A3C8-C9CF0C5495E1}');
+  for (const n of ['filter.cutoff', 'filter.resonance', 'masterGain.gain', 'osc1.amp.gain', 'osc1.type', 'glide.glideTime', 'voiceLimit']) {
+    assert.ok(r.names.includes(n), `${n} in ${r.names.join(', ')}`);
+  }
+  assert.ok(!r.names.some((n) => /ComponentData|x:id|^gui\./.test(n)), 'no container ids, no UI state');
+  const viaFolder = pluginParamNames('Mai Tai 2', { roots: [root], maps: [] });
+  assert.equal(viaFolder.plugin, 'Mai Tai');
+  assert.ok(viaFolder.names.includes('masterGain.gain'));
 });
