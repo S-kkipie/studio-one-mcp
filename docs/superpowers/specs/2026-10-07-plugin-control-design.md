@@ -58,7 +58,18 @@ live_plugin_* tools (server)
 ### 2. Backends
 
 - **Native (PreSonus):** the existing `live_plugin_params` / `live_set_plugin_param` code, unchanged.
-- **State backend**, for plug-ins with `stateRoundTrip=true`:
+- **State backend, XML flavour**: the primary third-party path, verified live on 2026-10-07 with Archetype Petrucci X. Many JUCE plug-ins store their component state as `"VC2!" + u32 size + XML`, with parameter values in real units (Neural: `inputGain="0"`, `gateThreshold="-93.1"`). The loop:
+  1. Read the state (see "Reading state" below).
+  2. Edit the XML attribute named in the catalog's `stateKey`. The scanner fills `stateKey` by diffing two `raw_state` XML dumps before and after changing one parameter. For Neural, `stateKey` can also come from the plug-in's own `parametersMap` (`/parameters:<id>`).
+  3. Rebuild the `.vstpreset`. The chunk list keeps `Comp` / `Cont` / `Info`, with `Comp` size and offsets recomputed.
+  4. Load it with the replace-slot flow:
+     - drop the file into `Documents/Studio One/Presets/<Vendor>/<Plug-in>/studio-one-mcp/`;
+     - run `Presets/Re-Index Presets` (≈15 s; batch changes);
+     - `insertDevice(folder, presetObj, position)`;
+     - old slot `interpretCommand("Device","Remove")`;
+     - restore bypass;
+     - delete the temporary preset.
+- **State backend, binary flavour**, for plug-ins with `stateRoundTrip=true` but no XML: pedalboard applies the change to a loaded copy of the state and exports `raw_state`, then the same replace-slot flow runs:
   1. Read the current state. Save the song with `live_save`, unzip `Presets/Channels/<channel>/<n> - <name>.vstpreset`, and load it into pedalboard.
   2. Apply the changes by parameter key and build a `.vstpreset`.
   3. Write it to `Documents/Studio One/Presets/<Vendor>/<Plug-in>/studio-one-mcp/<uuid>.vstpreset` and re-index.
@@ -67,7 +78,12 @@ live_plugin_* tools (server)
   - Reads come from the same saved state (the read-back after `live_save` gives exact display text).
   - It is not realtime (seconds per change) and is documented as such.
   - It needs an edit-task op to remove a device or replace a slot. That API is to be found in the plan's first spike task; if none exists, insert the new instance after the old one and bypass + remove the old one via a command.
-- **MIDI-CC backend**, for plug-ins whose vendor supports MIDI mapping (Neural DSP first):
+- **Reading state** without saving the user's song:
+  1. On first control of a slot, replace it with an identical instance loaded from an MCP-owned user preset (`studio-one-mcp/<uuid>`), which preserves the state.
+  2. Later reads focus the plug-in with `openEditorAndFocus`, run `Presets/Update Preset` (no dialog: it overwrites the current user preset), read that file, then close the window.
+  - If `Update Preset` is unavailable or prompts, fall back to `live_save` + reading `Presets/Channels/...` from the song file, and say so in the result.
+  - Plan task 1 verifies this live.
+- **MIDI-CC backend (deferred, unproven)**: `setParamValue` on the insert element's "MIDI CC ch|cc" parameter did not change Archetype even with a Neural routing file. Neural's routing schema is known (`<routing enabled routingID type="cc_absolute" target="<parameterMap id>" midiChannel data1 data2 value/>`). This is kept only as a future realtime option; it is not in this plan. The old text follows for reference. For plug-ins whose vendor supports MIDI mapping (Neural DSP first):
   1. Generate the vendor's mapping file: CC (and channel) → parameter, covering every parameter, up to 16 × 128 slots.
   2. Set values with `setParamValue` on the insert element's "MIDI CC ch|cc" parameter.
   - Value read-back comes from the state backend's read path when a song save is acceptable; otherwise the last value written is kept in a cache.
@@ -95,7 +111,7 @@ live_plugin_* tools (server)
 |---|---|
 | `live_plugin_scan` | (Re)scan installed plug-ins; returns counts by capability and newly found plug-ins. |
 | `plugin_catalog` | Search the catalog by name/vendor/parameter text; offline, no Studio One needed. |
-| `live_plugin_params` (extended) | For any plug-in: parameter list with values. Native: live. State/MIDI: via catalog + read path. Reports the backend used. |
+| `live_plugin_params` (extended) | For any plug-in: parameter list with values. Native: live. State: via catalog + read path. Reports the backend used. |
 | `live_set_plugin_param` (extended) | Set one or many parameters by catalog name/key, with text or normalized values; batches go in one state round-trip. |
 | `live_plugin_presets` | List / load / store presets. |
 | `live_add_plugin` (extended) | Optional `preset`. |
@@ -120,7 +136,7 @@ live_plugin_* tools (server)
   - tool argument handling with the fake bridge.
 - Live, on `mcp-prueba` using installed plug-ins:
   - Pro EQ (native);
-  - Archetype Petrucci X (MIDI or Neural adapter);
+  - Archetype Petrucci X (state backend, XML flavour);
   - one plug-in with `stateRoundTrip=true` found by the scan;
   - MODO BASS (opaque presets).
 
