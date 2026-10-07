@@ -1,29 +1,33 @@
-// File-dialog filler: static PowerShell scripts fill Studio One's Export / Load preset dialog.
+// Preset file dialog helper: static PowerShell script (scripts/preset-dialog.ps1) + Node wrappers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fillFileDialog, snapshotDialogs, FILEDIALOG_SCRIPT, SNAPSHOT_SCRIPT } from '../src/plugins/filedialog.js';
+import fs from 'node:fs';
+import { fillFileDialog, snapshotDialogs, cancelPresetDialogs, runScript, DIALOG_SCRIPT } from '../src/plugins/filedialog.js';
 
-const decode = (args) => Buffer.from(args[args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
+const SCRIPT = fs.readFileSync(DIALOG_SCRIPT, 'utf8');
 const base = { pid: 4242, exclude: [65552, 131090] };
+const win = { platform: 'win32' };
 
 test('not supported off Windows, without running anything', async () => {
   let ran = false;
   const run = async () => { ran = true; return ''; };
   await assert.rejects(fillFileDialog({ ...base, path: '/tmp/x', expect: 'export', platform: 'darwin', run }), /not supported on this platform/);
   await assert.rejects(snapshotDialogs({ platform: 'linux', run }), /not supported on this platform/);
+  await assert.rejects(cancelPresetDialogs({ ...base, platform: 'linux', run }), /not supported on this platform/);
   assert.equal(ran, false);
 });
 
-test('fillFileDialog: the script is static; path, mode, process, snapshot and timeout travel in the environment', async () => {
+test('fill: the script file is static; path, mode, process, snapshot and timeout travel in the environment', async () => {
   const path = "C:\\Temp\\it's $(rm -rf) `x` \"q\"\\a1b2";
   let seen;
-  const run = async (cmd, args, opts) => { seen = { cmd, args, opts }; return '{"ok":true,"title":"Exportar preset"}\r\n'; };
-  const r = await fillFileDialog({ ...base, path, expect: 'export', timeoutMs: 1234, platform: 'win32', run });
+  const run = async (cmd, args, opts) => { seen = { cmd, args, opts }; return '{"event":"found","title":"Exportar preset"}\r\n{"ok":true,"title":"Exportar preset"}\r\n'; };
+  const r = await fillFileDialog({ ...base, ...win, path, expect: 'export', timeoutMs: 1234, run });
   assert.deepEqual(r, { ok: true, title: 'Exportar preset' });
   assert.equal(seen.cmd, 'powershell.exe');
-  assert.equal(decode(seen.args), FILEDIALOG_SCRIPT);
+  assert.deepEqual(seen.args.slice(-2), ['-File', DIALOG_SCRIPT]);
   for (const a of seen.args) assert.ok(!a.includes('a1b2'), 'the path is not on the command line');
-  assert.ok(!FILEDIALOG_SCRIPT.includes('a1b2'));
+  assert.ok(!SCRIPT.includes('a1b2'));
+  assert.equal(seen.opts.env.S1MCP_FD_MODE, 'fill');
   assert.equal(seen.opts.env.S1MCP_FD_PATH, path);
   assert.equal(seen.opts.env.S1MCP_FD_EXPECT, 'export');
   assert.equal(seen.opts.env.S1MCP_FD_TIMEOUT_MS, '1234');
@@ -32,73 +36,94 @@ test('fillFileDialog: the script is static; path, mode, process, snapshot and ti
   assert.ok(seen.opts.timeout > 1234, 'the process timeout covers the dialog wait');
 });
 
-test('the scripts fit on a command line (-EncodedCommand)', () => {
-  for (const s of [FILEDIALOG_SCRIPT, SNAPSHOT_SCRIPT]) assert.ok(Buffer.from(s, 'utf16le').toString('base64').length < 30000);
-});
-
-test('fillFileDialog: rejects bad input before running', async () => {
+test('fill: rejects bad input before running', async () => {
   let ran = false;
   const run = async () => { ran = true; return ''; };
-  await assert.rejects(fillFileDialog({ ...base, path: 'x', expect: 'save', platform: 'win32', run }), /expect/);
-  await assert.rejects(fillFileDialog({ ...base, path: '', expect: 'load', platform: 'win32', run }), /path/);
-  await assert.rejects(fillFileDialog({ ...base, path: 'C:\\' + 'x'.repeat(240), expect: 'load', platform: 'win32', run }), /longer than 240/);
-  await assert.rejects(fillFileDialog({ path: 'C:\\t\\x', expect: 'load', platform: 'win32', run }), /process id/);
+  await assert.rejects(fillFileDialog({ ...base, ...win, path: 'x', expect: 'save', run }), /expect/);
+  await assert.rejects(fillFileDialog({ ...base, ...win, path: '', expect: 'load', run }), /path/);
+  await assert.rejects(fillFileDialog({ ...base, ...win, path: 'C:\\' + 'x'.repeat(240), expect: 'load', run }), /longer than 240/);
+  await assert.rejects(fillFileDialog({ ...win, path: 'C:\\t\\x', expect: 'load', run }), /process id/);
   assert.equal(ran, false);
 });
 
-test('fillFileDialog: a failure reported by the script (after its Cancel) throws', async () => {
-  const run = async () => '{"ok":false,"error":"the filename field did not take the path","cancelled":true}';
-  await assert.rejects(fillFileDialog({ ...base, path: 'C:\\t\\x', expect: 'load', platform: 'win32', run }), /did not take the path.*cancelled/s);
-  const run2 = async () => '{"ok":false,"error":"Studio One said after the dialog closed: Error | The preset is corrupt","cancelled":true,"closed":true}';
-  await assert.rejects(fillFileDialog({ ...base, path: 'C:\\t\\x', expect: 'load', platform: 'win32', run: run2 }), /preset is corrupt/);
+const fillWith = (out, extra = {}) => fillFileDialog({ ...base, ...win, path: 'C:\\t\\x', expect: 'load', run: async () => out, ...extra });
+
+test('fill: failures carry found / closed / button / foreign; "(cancelled)" only when Cancel was pressed', async () => {
+  await assert.rejects(fillWith('{"ok":false,"found":true,"error":"the filename field did not take the path","cancelled":true,"button":"cancel"}'),
+    (e) => /did not take the path \(cancelled\)$/.test(e.message) && e.found === true && e.button === 'cancel');
+  await assert.rejects(fillWith('{"ok":false,"found":false,"foreign":true,"error":"a new dialog \'Guardar como\' is not a preset file dialog; it was left alone"}'),
+    (e) => /Guardar como.*left alone$/.test(e.message) && e.found === false && e.foreign === true);
+  await assert.rejects(fillWith('{"ok":false,"found":false,"error":"no preset file dialog appeared within 8000 ms"}'), (e) => e.found === false);
 });
 
-test('fillFileDialog: no dialog, a crashed script, garbage output, or an abort throw', async () => {
-  const f = (run) => fillFileDialog({ ...base, path: 'C:\\t\\x', expect: 'load', platform: 'win32', run });
-  await assert.rejects(f(async () => '{"ok":false,"error":"no file dialog appeared within 8000 ms"}'), /no file dialog/);
-  await assert.rejects(f(async () => { throw new Error('boom'); }), /file dialog.*boom/);
-  await assert.rejects(f(async () => 'Add-Type : nope'), /file dialog/);
+test('fill: a box after a load that went through: "Studio One showed: ... may have been applied", no "(cancelled)"', async () => {
+  const out = '{"event":"found","title":"Cargar preset"}\n{"event":"ok-pressed"}\n{"event":"closed"}\n{"ok":false,"found":true,"closed":true,"shown":"The preset is damaged","button":"ok","error":"Studio One showed: The preset is damaged"}';
+  await assert.rejects(fillWith(out), (e) => e.message === 'Studio One showed: The preset is damaged. The preset may have been applied.' && e.closed && e.button === 'ok');
+  await assert.rejects(fillWith(out, { expect: 'export' }), (e) => e.message === 'Studio One showed: The preset is damaged.');
+});
+
+test('fill: stopped by the signal: success once OK was pressed, else a failure that says whether the dialog was seen', async () => {
+  const stopped = (stdout) => fillFileDialog({ ...base, ...win, path: 'C:\\t\\x', expect: 'export', run: async () => ({ stdout, aborted: true }) });
+  assert.deepEqual(await stopped('{"event":"found","title":"Exportar preset"}\n{"event":"ok-pressed"}\n'), { ok: true, title: 'Exportar preset', aborted: true });
+  await assert.rejects(stopped(''), (e) => e.found === false && e.aborted === true && /before its dialog was seen/.test(e.message));
+  await assert.rejects(stopped('{"event":"found","title":"Exportar preset"}\n'), (e) => e.found === true && e.aborted === true);
+});
+
+test('fill: a crashed helper or garbage output throws', async () => {
+  await assert.rejects(fillWith(null, { run: async () => { throw new Error('boom'); } }), /helper failed: boom/);
+  await assert.rejects(fillWith('Add-Type : nope'), /unexpected helper output/);
+});
+
+test('snapshot: runs the script in snapshot mode; pid and handles back', async () => {
+  let env;
+  const run = async (_c, _a, opts) => { env = opts.env; return '{"ok":true,"pid":9876,"handles":[1,2,3]}'; };
+  assert.deepEqual(await snapshotDialogs({ ...win, run }), { pid: 9876, exclude: [1, 2, 3] });
+  assert.equal(env.S1MCP_FD_MODE, 'snapshot');
+  assert.deepEqual(await snapshotDialogs({ ...win, run: async () => '{"ok":true,"pid":9876,"handles":[]}' }), { pid: 9876, exclude: [] });
+  await assert.rejects(snapshotDialogs({ ...win, run: async () => '{"ok":false,"error":"several Studio One instances are running"}' }), /several/);
+});
+
+test('cancel watch: cancel mode with the snapshot; reports cancelled titles, also when stopped early', async () => {
+  let env;
+  const run = async (_c, _a, opts) => { env = opts.env; return '{"event":"cancelled","title":"Exportar preset"}\n{"ok":true,"cancelled":["Exportar preset"]}'; };
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, timeoutMs: 5000, run }), { cancelled: ['Exportar preset'] });
+  assert.equal(env.S1MCP_FD_MODE, 'cancel');
+  assert.equal(env.S1MCP_FD_EXCLUDE, '65552,131090');
+  assert.equal(env.S1MCP_FD_TIMEOUT_MS, '5000');
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => ({ stdout: '{"event":"cancelled","title":"Cargar preset"}\n', aborted: true }) }), { cancelled: ['Cargar preset'] });
+  assert.deepEqual(await cancelPresetDialogs({ ...base, ...win, run: async () => '{"ok":true,"cancelled":[]}' }), { cancelled: [] });
+});
+
+test('runScript: an abort kills the process and keeps what it printed', async () => {
   const ac = new AbortController();
-  let gotSignal;
-  const p = fillFileDialog({ ...base, path: 'C:\\t\\x', expect: 'load', platform: 'win32', signal: ac.signal,
-    run: (_c, _a, opts) => new Promise((_, rej) => { gotSignal = opts.signal; opts.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))); }) });
+  const p = runScript(process.execPath, ['-e', 'console.log(JSON.stringify({event:"found"})); setTimeout(() => {}, 20000)'], { env: process.env, timeout: 30000, signal: ac.signal });
+  await new Promise((r) => setTimeout(r, 400));
   ac.abort();
-  await assert.rejects(p, /stopped waiting/);
-  assert.equal(gotSignal, ac.signal);
+  const r = await p;
+  assert.equal(r.aborted, true);
+  assert.match(r.stdout, /"event":"found"/);
+  const done = await runScript(process.execPath, ['-e', 'console.log("{}")'], { env: process.env, timeout: 30000 });
+  assert.deepEqual(done, { stdout: '{}\n', aborted: false });
 });
 
-test('snapshotDialogs: runs the static snapshot script; pid and handles back', async () => {
-  let seen;
-  const run = async (cmd, args) => { seen = decode(args); return '{"ok":true,"pid":9876,"handles":[1,2,3]}'; };
-  assert.deepEqual(await snapshotDialogs({ platform: 'win32', run }), { pid: 9876, exclude: [1, 2, 3] });
-  assert.equal(seen, SNAPSHOT_SCRIPT);
-  assert.deepEqual(await snapshotDialogs({ platform: 'win32', run: async () => '{"ok":true,"pid":9876,"handles":[]}' }), { pid: 9876, exclude: [] });
-  await assert.rejects(snapshotDialogs({ platform: 'win32', run: async () => '{"ok":false,"error":"several Studio One instances are running"}' }), /several/);
-});
-
-test('the snapshot script: one instance, or the one with a song window; else an error', () => {
-  const s = SNAPSHOT_SCRIPT;
-  assert.match(s, /Get-Process "Studio One"/);
-  assert.match(s, /StartsWith\("Studio One - "\)/);
-  assert.match(s, /several Studio One instances/);
-  assert.match(s, /Dialogs\(\$target\)/);
-});
-
-test('the filler script: only NEW dialogs of the given process; 0x47C / Edit; OK=1, Cancel=2, Yes=6 for export only', () => {
-  const s = FILEDIALOG_SCRIPT;
-  for (const v of ['PATH', 'EXPECT', 'TIMEOUT_MS', 'PID', 'EXCLUDE']) assert.match(s, new RegExp(`\\$env:S1MCP_FD_${v}`));
-  assert.match(s, /-not \$exclude\.Contains\(\$_\.ToInt64\(\)\)/); // snapshot handles are never touched
-  assert.match(s, /Dialogs\(\$target\)/);                        // only the bridge's Studio One process
-  assert.ok(!/Get-Process/.test(s), 'the filler does not pick processes itself');
-  assert.match(s, /"#32770"/);
-  assert.match(s, /0x47C/);
-  assert.match(s, /"Edit"/);
-  assert.match(s, /0x000C/); // WM_SETTEXT
-  assert.match(s, /0x00F5/); // BM_CLICK
-  assert.match(s, /Click\(\$dlg, 1\)/);
-  assert.match(s, /Click\(\$dlg, 2\)/); // Cancel on failure
-  assert.match(s, /\$expect -eq 'export'[^\n]*ClickTask\(\$c, 6\)/); // overwrite confirm: Yes only when exporting
-  assert.match(s, /after the dialog closed/);                    // error box after close: read, dismiss, report
-  assert.match(s, /"Static"/);
+test('the script: only NEW dialogs of the given process that pass the preset-filter check', () => {
+  const s = SCRIPT;
+  for (const v of ['MODE', 'PATH', 'EXPECT', 'TIMEOUT_MS', 'PID', 'EXCLUDE']) assert.match(s, new RegExp(`\\$env:S1MCP_FD_${v}`));
+  assert.match(s, /-not \$exclude\.Contains\(\$h\.ToInt64\(\)\)/);      // snapshot handles are never touched
+  assert.match(s, /Dialogs\(\$target\)/);                              // only the bridge's Studio One process
+  assert.match(s, /StartsWith\("Studio One - "\)/);                    // instance choice (snapshot mode)
+  assert.match(s, /\\\*\\\.\(vstpreset\|preset\|fxpreset\|instrument\)/); // the positive discriminator
+  assert.match(s, /0x0146/); assert.match(s, /0x0148/);                // combo items (CB_GETCOUNT / CB_GETLBTEXT)
+  assert.match(s, /if \(IsPresetDialog \$h\) \{ \$dlg = \$h; break \}/); // fill: only a preset dialog is taken
+  assert.match(s, /if \(IsPresetDialog \$h\) \{\s*\n\s*\$t = /);          // cancel: only a preset dialog is cancelled
+  assert.match(s, /left alone/);
+  assert.match(s, /0x47C/); assert.match(s, /"Edit"/);
+  assert.match(s, /0x000C/); assert.match(s, /0x00F5/);               // WM_SETTEXT, BM_CLICK
+  assert.match(s, /\$expect -eq 'export'[^\n]*ClickTask\(\$c, 6\)/);   // overwrite confirm: Yes only when exporting
+  assert.match(s, /BoxShaped\(\$c\)/);                                  // error boxes: message-box shaped...
+  assert.match(s, /\$o -ne \$dlg\.ToInt64\(\) -and \$o -ne \$dlgOwner/); // ...owned by our dialog or its owner
   assert.ok(!/SetForegroundWindow|SetActiveWindow|SetFocus|mouse_event|SendInput|keybd_event/.test(s), 'never foregrounds or fakes input');
+  // Cancel mode never presses OK.
+  const cancelBlock = s.slice(s.indexOf("if ($mode -eq 'cancel')"), s.indexOf("if ($mode -ne 'fill')"));
+  assert.ok(cancelBlock.includes('Click($h, 2)') && !/Click\(\$h, 1\)|Click\(\$h, 6\)/.test(cancelBlock));
 });

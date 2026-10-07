@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { presetCommand } from './controller.js';
-import { fillFileDialog, snapshotDialogs, MAX_PATH_CHARS } from './filedialog.js';
+import { fillFileDialog, snapshotDialogs, cancelPresetDialogs, MAX_PATH_CHARS } from './filedialog.js';
 
 // .instrument: what Studio One writes for an instrument's Export Preset (7.2.3, Mai Tai).
 export const PRESET_EXTS = ['.vstpreset', '.preset', '.fxpreset', '.instrument'];
@@ -44,34 +44,62 @@ function checkPathLength(p) {
   if (p.length > MAX_PATH_CHARS) throw new Error(`The temp preset path is longer than ${MAX_PATH_CHARS} characters (${p}); set TEMP to a shorter folder.`);
 }
 
+export const CANCEL_MARGIN_MS = 3000;
+export const LATE_CANCEL_MS = 10000;
+const isTimeout = (e) => /did not answer/.test(e?.message ?? String(e));
+
 // Snapshot the dialogs that are already open, start the bridge call (it blocks while the dialog is
-// open), fill the dialog, then await the call. The fill waits as long as the call can take, so a
-// late dialog is still handled; when the call fails first (e.g. "not available": no dialog will
-// come) the fill is stopped. When the fill fails, the filler has pressed Cancel, so the call still
-// returns. A bridge error explains more than the fill error it caused.
-async function runWithDialog(call, target, command, { fill, snapshot }, fillArgs) {
+// open), fill the dialog, then await the call.
+// - The filler is stopped as soon as the call returns, whatever the answer: then nothing left on
+//   screen can be ours.
+// - If the filler failed before it found our dialog while the call is still pending, our dialog
+//   may still come: a cancel-watch presses Cancel (never OK) on a new preset dialog until the call
+//   returns or its time is up.
+// - If the call times out (Studio One took too long), a short cancel-watch cancels a late dialog
+//   and the operation fails.
+// -> { value, missed } (missed: the call returned OK but the filler never saw our dialog).
+async function runWithDialog(call, target, command, { fill, snapshot, cancelWatch }, fillArgs) {
   const { pid, exclude } = await snapshot();
-  const stop = new AbortController();
-  const pending = presetCommand(call, target, command, { timeoutMs: COMMAND_TIMEOUT_MS });
-  const settled = pending.then((value) => ({ value }), (error) => {
-    // A timeout means Studio One may still open the dialog: let the filler go on to handle it.
-    if (!/did not answer/.test(error.message)) stop.abort();
-    return { error };
-  });
+  const started = Date.now();
+  const stopFill = new AbortController();
+  let isSettled = false;
+  const settled = presetCommand(call, target, command, { timeoutMs: COMMAND_TIMEOUT_MS })
+    .then((value) => ({ value }), (error) => ({ error, timeout: isTimeout(error) }));
+  void settled.then(() => { isSettled = true; stopFill.abort(); });
   let fillError = null;
-  try { await fill({ ...fillArgs, pid, exclude, timeoutMs: COMMAND_TIMEOUT_MS + 5000, signal: stop.signal }); } catch (e) { fillError = e; }
+  try { await fill({ ...fillArgs, pid, exclude, timeoutMs: COMMAND_TIMEOUT_MS + 5000, signal: stopFill.signal }); } catch (e) { fillError = e; }
+  let lateCancelled = [];
+  if (fillError && !fillError.found && !isSettled) {
+    const stopWatch = new AbortController();
+    void settled.then(() => stopWatch.abort());
+    const timeoutMs = Math.max(0, COMMAND_TIMEOUT_MS - (Date.now() - started)) + CANCEL_MARGIN_MS;
+    try { lateCancelled = (await cancelWatch({ pid, exclude, timeoutMs, signal: stopWatch.signal })).cancelled; } catch { /* reported below */ }
+  }
   const r = await settled;
+  if (r.timeout) {
+    let w = { cancelled: [] };
+    try { w = await cancelWatch({ pid, exclude, timeoutMs: LATE_CANCEL_MS }); } catch { /* best effort */ }
+    const cancelled = lateCancelled.length + w.cancelled.length > 0;
+    throw new Error(cancelled ? 'Studio One took too long; the preset dialog was cancelled'
+      : `Studio One took too long; no preset dialog was seen to cancel${fillError ? ` (${fillError.message})` : ''}`);
+  }
   if (r.error) throw r.error;
-  if (fillError) throw fillError;
+  if (fillError) {
+    // The call returned OK although the filler never saw our dialog (it was stopped while
+    // waiting): the caller decides (an export counts if its file exists).
+    if (fillError.aborted && !fillError.found && r.value?.ok === true) return { value: r.value, missed: true };
+    if (lateCancelled.length) throw new Error(`${fillError.message}; the preset dialog came later and was cancelled`);
+    throw fillError;
+  }
   if (!r.value || r.value.ok !== true) throw new Error(`${command} did not run (Studio One answered ${JSON.stringify(r.value)})`);
-  return r.value;
+  return { value: r.value, missed: false };
 }
 
 const removeQuietly = (p) => { try { fs.rmSync(p, { force: true }); } catch { /* best effort */ } };
 
 // -> { ext, buf }: the plug-in's current state as the preset file it exports
 // (.vstpreset for VST3, .preset for Studio One's own plug-ins, .instrument for an instrument).
-export async function exportState(call, target, { fill = fillFileDialog, snapshot = snapshotDialogs, tmpDir = defaultTmpDir() } = {}) {
+export async function exportState(call, target, { fill = fillFileDialog, snapshot = snapshotDialogs, cancelWatch = cancelPresetDialogs, tmpDir = defaultTmpDir() } = {}) {
   return withDialogLock(async () => {
     fs.mkdirSync(tmpDir, { recursive: true });
     sweepStale(tmpDir);
@@ -80,9 +108,9 @@ export async function exportState(call, target, { fill = fillFileDialog, snapsho
     checkPathLength(stem + '.vstpreset');
     const ours = () => fs.readdirSync(tmpDir).filter((f) => f === base || f.startsWith(base + '.'));
     try {
-      await runWithDialog(call, target, 'Export Preset', { fill, snapshot }, { path: stem, expect: 'export' });
+      const { missed } = await runWithDialog(call, target, 'Export Preset', { fill, snapshot, cancelWatch }, { path: stem, expect: 'export' });
       const files = ours();
-      if (!files.length) throw new Error('Export Preset: Studio One wrote no preset file');
+      if (!files.length) throw new Error(missed ? 'Export Preset: the preset dialog was never seen and no file was written' : 'Export Preset: Studio One wrote no preset file');
       const file = files[0];
       const ext = path.extname(file).toLowerCase();
       if (!PRESET_EXTS.includes(ext)) throw new Error(`Export Preset: unexpected preset file ${file}`);
@@ -94,7 +122,7 @@ export async function exportState(call, target, { fill = fillFileDialog, snapsho
 }
 
 // Loads `buf` (a preset file of type `ext`) into the plug-in in place.
-export async function loadState(call, target, buf, ext, { fill = fillFileDialog, snapshot = snapshotDialogs, tmpDir = defaultTmpDir() } = {}) {
+export async function loadState(call, target, buf, ext, { fill = fillFileDialog, snapshot = snapshotDialogs, cancelWatch = cancelPresetDialogs, tmpDir = defaultTmpDir() } = {}) {
   const e = String(ext || '').toLowerCase();
   const dotted = e.startsWith('.') ? e : '.' + e;
   if (!PRESET_EXTS.includes(dotted)) throw new Error(`loadState: unsupported preset extension ${ext} (use ${PRESET_EXTS.join(', ')})`);
@@ -105,7 +133,8 @@ export async function loadState(call, target, buf, ext, { fill = fillFileDialog,
     checkPathLength(file);
     try {
       fs.writeFileSync(file, buf);
-      await runWithDialog(call, target, 'Load Preset File', { fill, snapshot }, { path: file, expect: 'load' });
+      const { missed } = await runWithDialog(call, target, 'Load Preset File', { fill, snapshot, cancelWatch }, { path: file, expect: 'load' });
+      if (missed) throw new Error('Load Preset File returned, but its dialog was never seen: the preset was not loaded by us');
       return { ok: true };
     } finally {
       removeQuietly(file);
