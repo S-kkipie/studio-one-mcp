@@ -14,10 +14,9 @@ import { fileURLToPath } from 'node:url';
 import { listSongs, resolveSong, songFolder } from './library.js';
 import { bridgeStatus, call } from './bridge.js';
 import { midiPort } from './midi.js';
-import { pluginParamNames } from './plugins.js';
 import { arranger, listMacros, runMacro } from './arranger.js';
 import { tempo } from './tempo.js';
-import { trackEdit, addBus, trackTask, addInstrumentTrack, addPlugin, addFxSend } from './tracks.js';
+import { trackEdit, addBus, trackTask, addInstrumentTrack, addFxSend } from './tracks.js';
 import { liveEvents } from './events.js';
 import { timeSignature } from './signatures.js';
 import { writeAutomation } from './automation.js';
@@ -33,6 +32,8 @@ import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEm
 import { version } from './version.js';
 import { defaultCatalogDir } from './plugins/scan.js';
 import { loadCatalog, matchPlugin, searchCatalog } from './plugins/catalog.js';
+import { getParams, setParams, pluginPresets, addPluginWithPreset, removePlugin, runScan } from './plugins/controller.js';
+import { focusPlugin, closePluginWindows } from './plugins/windows.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
 const fail = (message) => ({ content: [{ type: 'text', text: message }], isError: true });
@@ -477,9 +478,13 @@ server.tool(
 
 server.tool(
   'live_add_plugin',
-  "Add a plug-in by name (from live_plugins) to a channel's inserts in the running Studio One. Returns the channel's inserts afterwards. One live_undo removes it (the add goes through the MCP Track Edit task).",
-  { channel: z.string().describe('Exact channel label'), plugin: z.string().describe('Plug-in name, e.g. "Pro EQ", "Compressor", "Room Reverb"') },
-  guard((a) => addPlugin(call, a)),
+  "Add a plug-in by name (from live_plugins) to a channel's inserts in the running Studio One, optionally loaded with one of its presets (exact name from live_plugin_presets). Returns the channel's inserts afterwards. One live_undo removes it (the add goes through the MCP Track Edit task).",
+  {
+    channel: z.string().describe('Exact channel label'),
+    plugin: z.string().describe('Plug-in name, e.g. "Pro EQ", "Compressor", "Room Reverb"'),
+    preset: z.string().optional().describe('Exact preset name from live_plugin_presets'),
+  },
+  guard((a) => addPluginWithPreset(call, a)),
 );
 
 server.tool(
@@ -568,46 +573,86 @@ server.tool(
   guard((a) => call('setSend', a)),
 );
 
+const PLUGIN_NOTE = 'Third-party plug-ins (state backend) are not realtime: a read saves the song (File/Save) and reads the slot from it; a change saves the song too and replaces the plug-in with a new instance carrying the new settings (same slot and bypass), which takes a few seconds and drops edits made meanwhile in its window. Plug-ins that hide their parameters from hosts (backend opaque) only support presets (live_plugin_presets). After installing plug-ins run live_plugin_scan (it needs `npm run scan:setup` once).';
+
 server.tool(
   'live_plugin_params',
-  "Parameters of one plug-in on a channel in the running Studio One (slot from live_inserts): name, value, display text (e.g. \"2.0:1\", \"-12.0 dB\"), range and normalised value. Studio One cannot list a plug-in's parameters, so names come from its presets and Studio One's remote-control map; this works for PreSonus plug-ins. For others, pass the names in `params`.",
+  `Parameters of one plug-in on a channel in the running Studio One (slot from live_inserts), with backend (native, state or opaque) and realtime. Native (PreSonus plug-ins): name, value, display text (e.g. "2.0:1", "-12.0 dB"), range and normalised value, live; names come from their presets and Studio One's remote-control map. State (scanned third-party plug-ins): name, key, value in the plug-in's own units, label, range. ${PLUGIN_NOTE} To read names Studio One answers to directly, pass them in \`params\`.`,
   {
     channel: z.string(),
     slot: z.number().int(),
-    filter: z.string().optional().describe('Only parameters whose name contains this (e.g. "comp", "freq")'),
-    params: z.array(z.string()).optional().describe('Exact parameter names to read instead of the discovered ones'),
+    filter: z.string().optional().describe('Only parameters whose name (or key) contains this (e.g. "comp", "gain")'),
+    params: z.array(z.string()).optional().describe('Exact native parameter names to read instead of the discovered ones'),
   },
-  guard(async ({ channel, slot, filter, params }) => {
-    const rack = (await call('inserts', { channel }))[0];
-    const plug = rack && rack.inserts.find((i) => i.slot === slot);
-    if (!plug) throw new Error(`no plug-in in slot ${slot} on ${channel}`);
-    const known = params?.length ? { names: params, sources: ['params'] } : pluginParamNames(plug.name);
-    const want = filter ? known.names.filter((n) => n.toLowerCase().includes(filter.toLowerCase())) : known.names;
-    if (!want.length) {
-      return { channel, slot, plugin: plug.name, params: [], note: known.names.length ? `no parameter name contains "${filter}"` : `no parameter names known for ${plug.name}; pass them in params` };
+  guard((a) => getParams(call, a)),
+);
+
+const PARAM_VALUE = z.union([z.string(), z.number(), z.boolean(), z.object({ normalized: z.number() })]);
+
+server.tool(
+  'live_set_plugin_param',
+  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in its own units, e.g. "6 dB" or "off"), normalized (0..1) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized }; for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
+  {
+    channel: z.string(),
+    slot: z.number().int(),
+    param: z.string().optional(),
+    text: z.string().optional(),
+    normalized: z.number().optional(),
+    value: z.number().optional(),
+    changes: z.record(z.string(), PARAM_VALUE).optional().describe('Several parameters at once: { name or key: value }'),
+  },
+  guard(({ channel, slot, param, text, normalized, value, changes }) => {
+    const given = [text, normalized, value].filter((v) => v !== undefined).length;
+    if (changes) {
+      if (param !== undefined || given) throw new Error('give either changes, or param with one of text, normalized or value');
+      return setParams(call, { channel, slot, changes });
     }
-    const r = await call('pluginParams', { channel, slot, names: want });
-    // Discovered names the plug-in does not answer to are noise (other versions, UI state); given ones are not.
-    return params?.length ? r : { channel: r.channel, slot: r.slot, plugin: r.plugin, params: r.params };
+    if (param === undefined) throw new Error('give param (with one of text, normalized or value) or changes');
+    if (given !== 1) throw new Error('give exactly one of text, normalized or value');
+    const v = text !== undefined ? text : normalized !== undefined ? { normalized } : value;
+    return setParams(call, { channel, slot, changes: { [param]: v } });
   }),
 );
 
 server.tool(
-  'live_set_plugin_param',
-  'Set one plug-in parameter on a channel in the running Studio One (names from live_plugin_params). Give exactly one of: text, as Studio One displays it (e.g. "4.0:1", "-12 dB", "Standard"); normalized, 0..1; or value, the raw value within its min..max. Returns before/after; to revert, set the "before" value.',
+  'live_plugin_presets',
+  "Presets Studio One has indexed for a plug-in (any plug-in: PreSonus, third-party, and opaque ones too): list them for a slot (channel + slot) or by plug-in name, or load one onto a slot. Load replaces the slot's plug-in with a new instance made from the preset at the same position (bypass kept; the old instance is removed only after the new one is in), which takes a moment and is not realtime; to go back, load another preset. To add a new plug-in with a preset, use live_add_plugin with preset.",
   {
-    channel: z.string(),
-    slot: z.number().int(),
-    param: z.string(),
-    text: z.string().optional(),
-    normalized: z.number().optional(),
-    value: z.number().optional(),
+    action: z.enum(['list', 'load']),
+    channel: z.string().optional(),
+    slot: z.number().int().optional(),
+    plugin: z.string().optional().describe('For list without a slot: plug-in name as in live_plugins'),
+    preset: z.string().optional().describe('For load: exact preset name from list'),
   },
-  guard((a) => {
-    const given = ['text', 'normalized', 'value'].filter((k) => a[k] !== undefined);
-    if (given.length !== 1) throw new Error('give exactly one of text, normalized or value');
-    return call('setPluginParam', a);
+  guard((a) => pluginPresets(call, a)),
+);
+
+server.tool(
+  'live_remove_plugin',
+  "Remove the plug-in in one insert slot of a channel (slot from live_inserts) in the running Studio One. Plug-in windows of that channel are closed first. Returns the channel's inserts afterwards; usually undone by one live_undo (check with live_inserts). Ask before removing when the user has not clearly asked for it.",
+  { channel: z.string(), slot: z.number().int() },
+  guard((a) => removePlugin(call, a)),
+);
+
+server.tool(
+  'live_plugin_window',
+  'Open (and focus) the editor window of the plug-in in a slot, or close all plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only.',
+  { action: z.enum(['open', 'closeAll']), channel: z.string().optional(), slot: z.number().int().optional() },
+  guard(async ({ action, channel, slot }) => {
+    if (action === 'open') {
+      if (channel === undefined || slot === undefined) throw new Error('open needs channel and slot');
+      return focusPlugin(call, { channel, slot });
+    }
+    if (process.platform !== 'win32') return { closed: [], note: 'closing plug-in windows is only supported on Windows' };
+    return { closed: await closePluginWindows({ channel }) };
   }),
+);
+
+server.tool(
+  'live_plugin_scan',
+  '(Re)scan the installed VST3 plug-ins into the plug-in catalog used by live_plugin_params, live_set_plugin_param and plugin_catalog. Only new or changed plug-ins are scanned, each in its own process with a timeout, so a first scan can take minutes and later ones are quick. Run it after installing plug-ins. It needs the scanner\'s Python environment, set up once with `npm run scan:setup` in the studio-one-mcp folder. Returns counts, plug-ins per backend (state, opaque, unavailable) and what was scanned now.',
+  {},
+  guard(() => runScan()),
 );
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

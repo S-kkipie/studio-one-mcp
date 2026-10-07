@@ -195,6 +195,39 @@ async function rollBack(call, { channel, slot, count, newName, oldName, why }) {
     (bypassed ? `the new instance in slot ${slot} was bypassed, so only the original (now slot ${slot + 1}) is heard` : `the new instance in slot ${slot} could NOT be bypassed either: two instances are in series, remove one by hand`));
 }
 
+/**
+ * Replaces the plug-in in `slot` of `channel` with a new instance of class `cid` made from the indexed
+ * preset `preset` (exact name from listPresets): close plug-in windows (Track Edit tasks do not run
+ * while one is open), insert the new instance at the same position, remove the old one by its exact
+ * FX name (rolled back if that fails, so the original is never lost), check the position, restore
+ * the bypass. -> { slotName, plugin, bypassed, warning? }
+ */
+export async function replaceSlot(call, { channel, slot, cid, preset }, { closeWindows = closePluginWindows } = {}) {
+  await closeWindows();
+  const old = await slotInfo(call, channel, slot);
+  const count = (await rackOf(call, channel)).length;
+  const oldName = (await call('insertSlotName', { channel, slot })).name;
+  const ins = await insertPreset(call, { channel, cid, preset, position: slot });
+
+  // Remove the old instance (now one further down); a remove that did not happen is a failure.
+  let removeError = null;
+  try {
+    const r = await slotCommand(call, { channel, slot: slot + 1, command: 'Remove', name: oldName });
+    if (r.done !== true) removeError = 'Studio One did not remove it';
+  } catch (e) { removeError = e.message; }
+  if (!removeError) {
+    const n = (await rackOf(call, channel)).length;
+    if (n !== count) removeError = `the rack has ${n} plug-ins afterwards, expected ${count}`;
+  }
+  if (removeError) await rollBack(call, { channel, slot, count, newName: ins.slot, oldName, why: removeError });
+
+  const res = { slotName: ins.slot, plugin: old.name, bypassed: !!old.bypassed };
+  const now2 = await call('insertSlotName', { channel, slot }).catch(() => null);
+  if (now2 && ins.slot && now2.name !== ins.slot) res.warning = `slot ${slot} now holds ${now2.name}, not the new instance ${ins.slot}`;
+  if (old.bypassed) await call('setInsertBypass', { channel, slot, bypassed: true });
+  return res;
+}
+
 const safeDir = (s) => String(s).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || '_';
 
 // Removes the file, then each now-empty folder up to (and including) the first one we created,
@@ -272,30 +305,8 @@ export async function writePluginParams(call, { channel, slot, changes, entry },
       await sleep(pollMs);
     }
 
-    // Track Edit tasks do not run while any plug-in window is open.
-    await closeWindows();
-    const old = await slotInfo(call, channel, slot);
-    const count = (await rackOf(call, channel)).length;
-    const oldName = (await call('insertSlotName', { channel, slot })).name;
-    const ins = await insertPreset(call, { channel, cid, preset: name, position: slot });
-
-    // Remove the old instance (now one further down); a remove that did not happen is a failure.
-    let removeError = null;
-    try {
-      const r = await slotCommand(call, { channel, slot: slot + 1, command: 'Remove', name: oldName });
-      if (r.done !== true) removeError = 'Studio One did not remove it';
-    } catch (e) { removeError = e.message; }
-    if (!removeError) {
-      const n = (await rackOf(call, channel)).length;
-      if (n !== count) removeError = `the rack has ${n} plug-ins afterwards, expected ${count}`;
-    }
-    if (removeError) await rollBack(call, { channel, slot, count, newName: ins.slot, oldName, why: removeError });
-
-    const res = { ...base, slotName: ins.slot };
-    const now2 = await call('insertSlotName', { channel, slot }).catch(() => null);
-    if (now2 && ins.slot && now2.name !== ins.slot) res.warning = `slot ${slot} now holds ${now2.name}, not the new instance ${ins.slot}`;
-    if (old.bypassed) await call('setInsertBypass', { channel, slot, bypassed: true });
-    return res;
+    const rep = await replaceSlot(call, { channel, slot, cid, preset: name }, { closeWindows });
+    return { ...base, slotName: rep.slotName, ...(rep.warning ? { warning: rep.warning } : {}) };
   } finally {
     cleanup(file, scratchDir, created);
     // Re-index again so the deleted preset does not linger in Studio One's preset lists (best effort).

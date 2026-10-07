@@ -4,6 +4,8 @@
 //  - Remove Track is one undo step and asked nothing for an empty track;
 //  - Track/Group Selected Tracks opens a name dialog, so grouping is not offered.
 
+import { closePluginWindows } from './plugins/windows.js';
+
 const hex = (rgb) => `#${(rgb & 0xffffff).toString(16).padStart(6, '0')}`;
 export const toArgb = (color) => {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(color));
@@ -47,12 +49,31 @@ export async function addBus(call, { tracks, kind = 'bus' }) {
   return { kind, added, ...(kind === 'bus' ? { routed } : {}), note: 'One live_undo removes it (and puts the routing back).' };
 }
 
-// One operation through the MCP Track Edit task; its error, if any, becomes ours.
-export async function trackTask(call, op) {
+const TASK_BLOCKED = /Track\/MCP Track Edit is not available right now/;
+
+async function trackTaskOnce(call, op) {
   const { results } = await call('trackTask', { ops: [op] });
   const r = results[0] || {};
   if (r.error) throw new Error(r.error);
   return r;
+}
+
+// One operation through the MCP Track Edit task; its error, if any, becomes ours. Studio One
+// disables Track Edit tasks while a plug-in window is open or focused: then the plug-in windows are
+// closed once and the operation is tried again.
+export async function trackTask(call, op, { closeWindows = closePluginWindows } = {}) {
+  try {
+    return await trackTaskOnce(call, op);
+  } catch (e) {
+    if (!TASK_BLOCKED.test(String(e.message))) throw e;
+    await closeWindows();
+    try {
+      return await trackTaskOnce(call, op);
+    } catch (e2) {
+      if (TASK_BLOCKED.test(String(e2.message))) e2.message += ' (a plug-in window or a dialog may still be open in Studio One: close it and try again)';
+      throw e2;
+    }
+  }
 }
 
 export async function trackEdit(call, { track, action, name, color, to, folder, create, numbered, before, after }) {
