@@ -235,7 +235,9 @@ async function runExport(call, kind, timeoutS, folders, pid, winBefore, d) {
       cancelled = (await d.cancelExportDialogs({ pid, before: winBefore, timeoutMs: d.lateCancelMs, signal: stop.signal })).cancelled ?? [];
     } catch { /* best effort */ }
   }
-  await settleWithin(d.settleMs);
+  const c = await settleWithin(d.settleMs);
+  // The command failed on its own (not abandoned by us): that error is the real reason.
+  if (c.error && !abandon.signal.aborted) throw new Error(`${c.error.message} (no export dialog appeared)`);
   if (r.reason === 'no dialog') throw new Error('Studio One did not open the export dialog in time; any late export dialog was cancelled');
   throw new Error(`export dialog: ${r.reason}${cancelled.length ? '; a late export dialog was cancelled' : ''}`);
 }

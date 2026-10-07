@@ -59,7 +59,7 @@ export function call(op, args = {}, { timeoutMs = 5000, dir = mailboxDir, nudge 
     const id = randomUUID();
     const tmp = join(dir, `request.${id}.tmp`);
     writeFileSync(tmp, JSON.stringify({ id, op, args }) + '\n');
-    await placeRequest(tmp, join(dir, 'request.json'), { waitMs: timeoutMs });
+    await placeRequest(tmp, join(dir, 'request.json'), { waitMs: Math.min(timeoutMs, 30000) }); // a long export still gives up placing its request after 30 s
     if (onSent) {
       try { onSent(); } catch { /* the caller's hook must not break the call */ }
     }

@@ -320,3 +320,9 @@ test('findPid: the preset helper picks the instance; tasklist is the fallback', 
   assert.equal(await findPid({ snapshot: async () => { throw new Error('file dialog: Studio One is not running'); }, fallback: async () => 7 }), 7);
   await assert.rejects(findPid({ snapshot: async () => { throw new Error('file dialog: several Studio One instances are running with a song open; close all but one'); }, fallback: async () => 7 }), /^Error: several Studio One instances/);
 });
+
+test('the command failing on its own is reported, not "no dialog"', async () => {
+  const s = setup({ driver: async () => ({ ok: false, reason: 'no dialog' }), cmd: async (o) => { o.onSent(); throw new Error('Studio One: unknown command: Song/Export Mixdown'); } });
+  await assert.rejects(exportAudio(s.call, { kind: 'mixdown' }, s.deps), /unknown command: Song\/Export Mixdown \(no export dialog appeared\)/);
+  assert.equal(names(s.calls).at(-1), 'exportSettings:restore');
+});
