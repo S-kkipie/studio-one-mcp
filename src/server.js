@@ -29,7 +29,7 @@ import { mixSnapshot } from './mixsnap.js';
 import { bounce } from './bounce.js';
 import { diffSongs } from './diff.js';
 import { gridBeats } from './grid.js';
-import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd } from './compose.js';
+import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEmptyPart } from './compose.js';
 import { version } from './version.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
@@ -217,7 +217,7 @@ server.tool(
   guard(async ({ track, ops }) => {
     if (ops.some((o) => o.op === 'add')) {
       const { parts } = await call('notes', { track, maxNotes: 1 });
-      const empty = (parts || []).length > 0 && parts.every((p) => p.noteCount === 0);
+      const empty = addsToEmptyPart(parts, ops.find((o) => o.op === 'add').notes);
       if (empty) {
         if (ops.length !== 1) throw new Error('the track\'s parts have no notes yet: send the add on its own first (or use live_write_notes), then the other operations');
         const place = emptyPartAdd(parts, ops[0].notes || [], track);

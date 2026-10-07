@@ -1,7 +1,7 @@
 // Composition over a fake bridge: 120 bpm 4/4, so bar n starts at (n-1)*2 seconds.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd } from '../src/compose.js';
+import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEmptyPart } from '../src/compose.js';
 
 function bridge({ noResize = false, parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, insertAt = null } = {}) {
   const state = { loop: false, loopStart, loopEnd, position: 3, selected: ['Vox'], parts: parts.map((p) => ({ ...p })) };
@@ -141,4 +141,14 @@ test('emptyPartAdd: missing positions throw', () => {
 });
 test('emptyPartAdd: note beyond every part throws', () => {
   assert.throws(() => emptyPartAdd([{ start: 0, startBeat: 0, endBeat: 4 }], [{ pitch: 60, beat: 6, length: 1 }]), /no part covers beat 6/);
+});
+
+test('addsToEmptyPart: the covering part decides, even when other parts have notes', () => {
+  const parts = [{ startBeat: 0, endBeat: 16, noteCount: 32 }, { startBeat: 20, endBeat: 24, noteCount: 0 }];
+  assert.equal(addsToEmptyPart(parts, [{ beat: 20 }]), true);
+  assert.equal(addsToEmptyPart(parts, [{ beat: 3 }]), false);
+  assert.equal(addsToEmptyPart(parts, [{ beat: 18 }]), false); // nothing covers it, some part has notes
+  assert.equal(addsToEmptyPart([{ startBeat: 0, endBeat: 4, noteCount: 0 }], [{ beat: 1 }]), true);
+  assert.equal(addsToEmptyPart([], [{ beat: 1 }]), false);
+  assert.equal(addsToEmptyPart([{ startBeat: null, endBeat: null, noteCount: 0 }], [{ beat: 1 }]), true);
 });

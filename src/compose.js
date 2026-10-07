@@ -122,3 +122,18 @@ export function emptyPartAdd(parts, notes, track = 'the track') {
   if (!hit) throw new Error(`no part covers beat ${minBeat} on ${track}; use live_write_notes or live_create_part`);
   return { at: hit.start, notes: notes.map((n) => ({ ...n, beat: n.beat - hit.startBeat })) };
 }
+
+// Does an add go into an empty part? True when the part covering the first note has no
+// notes (other parts on the track may have some), or, if positions are unknown or no
+// part covers it, when every part is empty. Studio One's own add cannot start a part.
+export function addsToEmptyPart(parts, notes) {
+  const list = parts || [];
+  if (!list.length) return false;
+  const positioned = list.every((p) => typeof p.startBeat === 'number' && typeof p.endBeat === 'number');
+  if (positioned && notes && notes.length) {
+    const minBeat = Math.min(...notes.map((n) => n.beat));
+    const hit = list.filter((p) => p.startBeat <= minBeat && minBeat < p.endBeat).sort((a, b) => a.startBeat - b.startBeat).pop();
+    if (hit) return hit.noteCount === 0;
+  }
+  return list.every((p) => p.noteCount === 0);
+}
