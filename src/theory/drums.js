@@ -11,9 +11,9 @@ function lanePitch(lane) {
     if (p > 127) throw new Error(`drum lane ${lane} is outside MIDI 0-127`);
     return p;
   }
-  const p = GM_DRUMS[lane.toLowerCase()];
-  if (p === undefined) throw new Error(`unknown drum lane "${lane}" (known: ${Object.keys(GM_DRUMS).join(', ')}, or a MIDI number)`);
-  return p;
+  const key = lane.toLowerCase();
+  if (!Object.hasOwn(GM_DRUMS, key)) throw new Error(`unknown drum lane "${lane}" (known: ${Object.keys(GM_DRUMS).join(', ')}, or a MIDI number)`);
+  return GM_DRUMS[key];
 }
 
 export function drumGrid(pattern, { bars = 1, stepsPerBeat = 4, beatsPerBar = 4, velocity = 100 } = {}) {

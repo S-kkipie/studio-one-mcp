@@ -12,6 +12,7 @@ test('rhythmize: sustain, quarters, eighths, arpeggios', () => {
   assert.deepEqual(rhythmize([60, 64, 67], { rhythm: 'arp_up', beats: 2 }).map((n) => n.pitch), [60, 64, 67, 60]);
   assert.deepEqual(rhythmize([60, 64, 67], { rhythm: 'arp_down', beats: 2 }).map((n) => n.pitch), [67, 64, 60, 67]);
   assert.throws(() => rhythmize([60], { rhythm: 'swing', beats: 4 }), /rhythm must be/);
+  assert.throws(() => rhythmize([60], { rhythm: 'toString', beats: 4 }), /rhythm must be/);
 });
 
 test('drumGrid: GM lanes, accents, spaces and bars repeat', () => {
@@ -32,4 +33,5 @@ test('drumGrid: lane by MIDI number, | separators, errors', () => {
   assert.throws(() => drumGrid({ cowbell2: 'x' }), /unknown drum lane "cowbell2" \(known: .*kick/);
   assert.throws(() => drumGrid({ kick: 'x.o.' }), /use x, X or \./);
   assert.throws(() => drumGrid({}), /at least one lane/);
+  assert.throws(() => drumGrid({ constructor: 'x' }), /unknown drum lane "constructor"/);
 });
