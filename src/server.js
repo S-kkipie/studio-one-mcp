@@ -31,6 +31,8 @@ import { diffSongs } from './diff.js';
 import { gridBeats } from './grid.js';
 import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEmptyPart } from './compose.js';
 import { version } from './version.js';
+import { defaultCatalogDir } from './plugins/scan.js';
+import { loadCatalog, matchPlugin, searchCatalog } from './plugins/catalog.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
 const fail = (message) => ({ content: [{ type: 'text', text: message }], isError: true });
@@ -104,6 +106,26 @@ server.tool(
     const [from, to] = statSync(other).mtimeMs <= statSync(main).mtimeMs ? [other, main] : [main, other];
     const changes = diffSongs(readSong(from), readSong(to));
     return { from, to, changes: changes.length, diff: changes };
+  }),
+);
+
+server.tool(
+  'plugin_catalog',
+  'Offline plug-in catalog (from the scanner). With `plugin`: that plug-in parameters (name, key, range, isBoolean). Otherwise: search plug-ins by `query` (name/vendor substring; omit to list all) with backend state/opaque/unavailable.',
+  { query: z.string().optional(), plugin: z.string().optional() },
+  guard(({ query, plugin }) => {
+    const catalog = loadCatalog(defaultCatalogDir());
+    if (plugin) {
+      const e = matchPlugin(catalog, plugin);
+      if (!e) throw new Error(`Plug-in "${plugin}" is not in the catalog (${catalog.size} entries). Use plugin_catalog { query } to search, or run the scanner.`);
+      if (e.scanError) return { name: e.name, backend: 'unavailable', scanError: e.scanError };
+      const c = e.capabilities ?? {};
+      return {
+        name: e.name, vendor: e.vendor, backend: c.stateRoundTrip || c.xmlState ? 'state' : 'opaque', capabilities: c,
+        params: (e.params ?? []).map((p) => ({ name: p.name, key: p.key, min: p.min, max: p.max, default: p.default, isBoolean: p.isBoolean })),
+      };
+    }
+    return { count: catalog.size, results: searchCatalog(catalog, query) };
   }),
 );
 

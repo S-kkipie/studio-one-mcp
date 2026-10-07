@@ -58,7 +58,7 @@ test('exposes the song and live tools', async () => {
     'live_redo', 'live_rename_marker', 'live_run_macro', 'live_save', 'live_select_events', 'live_select_track', 'live_sends', 'live_set_automation',
     'live_set_channel', 'live_set_loop', 'live_set_plugin_param', 'live_set_send', 'live_set_transport', 'live_song', 'live_status', 'live_takes', 'live_tempo', 'live_time_signature', 'live_track_edit', 'live_track_state',
     'live_tracks', 'live_transport', 'live_undo', 'live_write_automation', 'live_write_chords', 'live_write_drums', 'live_write_notes',
-    'song_diff', 'song_history', 'song_list', 'song_read',
+    'plugin_catalog', 'song_diff', 'song_history', 'song_list', 'song_read',
   ]);
 });
 
