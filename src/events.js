@@ -38,8 +38,9 @@ export async function liveEvents(call, a) {
     case 'edit': {
       const op = { op: 'editEvent', track, event };
       if (a.to !== undefined) op.to = await toSeconds(call, a.to);
+      if (a.end !== undefined) op.end = await toSeconds(call, a.end);
       for (const [from, key] of [['to_track', 'toTrack'], ['gain_db', 'gainDb'], ['add_gain_db', 'addGainDb'], ['fade_in', 'fadeIn'], ['fade_out', 'fadeOut']]) if (a[from] !== undefined) op[key] = a[from];
-      if (Object.keys(op).length === 3) throw new Error('edit needs one or more of to, to_track, gain_db, add_gain_db, fade_in, fade_out');
+      if (Object.keys(op).length === 3) throw new Error('edit needs one or more of to, end, to_track, gain_db, add_gain_db, fade_in, fade_out');
       const r = await trackTask(call, op);
       return { track, before: r.before, after: r.after, done: r.done, note: 'One live_undo reverts the whole edit.' };
     }

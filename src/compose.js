@@ -32,30 +32,32 @@ async function restoreSelection(call, names) {
   for (const [i, name] of names.entries()) await call('selectTrack', { name, exclusive: i === 0 }).catch(() => {});
 }
 
-// Set the loop range without ever passing through an inverted state: when the new
-// range lies entirely after the current one, move the end first, else the start first.
-async function setLoopRange(call, current, target) {
-  const order = target.start >= current.end ? ['end', 'start'] : ['start', 'end'];
-  for (const k of order) await call('setLoop', { [k]: target[k] });
-  if (typeof target.enable === 'boolean') await call('setLoop', { enable: target.enable });
-}
-
+// Insert Instrument Part ignores the playhead and the loop range on Studio One 7.2.3:
+// it drops a one-bar part at a fixed spot. So insert, find the part that appeared,
+// then move it to the bar and resize it to the length.
 export async function createPart(call, { track, bar, bars = 1 }) {
   checkBar(bar);
   if (!Number.isInteger(bars) || bars < 1) throw new Error('bars must be an integer >= 1');
   const [start, end] = await barSeconds(call, [bar, bar + bars]);
-  const { transport, selectedTracks } = await call('song');
-  const loop = { start: transport.loopRange.start.seconds, end: transport.loopRange.end.seconds, enable: !!transport.loop };
+  const { selectedTracks } = await call('song');
+  const key = (e) => `${e.start}|${e.end}`;
+  const listEvents = async () => (await trackTask(call, { op: 'events', track })).events;
+  const before = await listEvents();
   let r;
   try {
-    await setLoopRange(call, loop, { start, end });
     await call('selectTrack', { name: track });
     r = await call('command', { category: 'Instrument Parts', name: 'Insert Instrument Part' });
   } finally {
-    await setLoopRange(call, { start, end }, loop).catch(() => {});
     await restoreSelection(call, selectedTracks);
   }
   if (!r || !r.executed) throw new Error(`could not insert an instrument part on ${track} (is it an instrument track?)`);
+  const after = await listEvents();
+  const seen = new Map();
+  for (const e of before) seen.set(key(e), (seen.get(key(e)) || 0) + 1);
+  const fresh = after.filter((e) => { const n = seen.get(key(e)) || 0; if (n) seen.set(key(e), n - 1); return !n; });
+  if (fresh.length !== 1) throw new Error(`Studio One did not add exactly one part to ${track}`);
+  const moved = await trackTask(call, { op: 'editEvent', track, event: fresh[0].number, to: start, end });
+  if (!(moved.done || []).includes('resize')) throw new Error('Studio One did not resize the new part (reinstall the device and restart Studio One, then retry); a stray part may be left at the default spot');
   return { track, part: { start, end } };
 }
 

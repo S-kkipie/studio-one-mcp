@@ -173,6 +173,14 @@ test("editEvent moves (seconds to the event's own beats), sets gain in dB, fades
   assert.equal(s.tracks.find((t) => t.name === 'Vox').events[0], s.clip);
 });
 
+test('editEvent: end resizes the event after the move; an end before the start is an error', () => {
+  const { results, s } = run([{ op: 'editEvent', track: 'Gtr', event: 1, to: 10, end: 14 }, { op: 'editEvent', track: 'Gtr', event: 1, end: 1 }]);
+  assert.deepEqual(results[0].done, ['move', 'resize']);
+  assert.deepEqual(s.log, [['move', 20], ['resize', 8]]);
+  assert.equal(results[0].after.end, 14);
+  assert.match(results[1].error, /cannot resize/);
+});
+
 test('editEvent: an unknown event number or track is an error and nothing changes', () => {
   const { results, s } = run([{ op: 'editEvent', track: 'Gtr', event: 2, to: 1 }, { op: 'editEvent', track: 'Bass', event: 1 }]);
   assert.match(results[0].error, /event 2 does not exist \(there are 1\)/);

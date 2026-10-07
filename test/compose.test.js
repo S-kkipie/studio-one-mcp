@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd } from '../src/compose.js';
 
-function bridge({ parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, failRestore = false } = {}) {
+function bridge({ noResize = false, parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, insertAt = [7, 9] } = {}) {
   const state = { loop: false, loopStart, loopEnd, position: 3, selected: ['Vox'], parts: parts.map((p) => ({ ...p })) };
   const calls = [];
   const barSeconds = (bars) => { const [b, beat = 1] = bars.split('.').map(Number); return (b - 1) * 2 + (beat - 1) * 0.5; };
@@ -17,18 +17,24 @@ function bridge({ parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, 
         return { position: { seconds: state.position } };
       case 'setLoop':
         // like Studio One: a start beyond the current end, or an end before the current start, is refused
-        if (failRestore && typeof args.enable === 'boolean') throw new Error('setLoop failed');
         if (typeof args.start === 'number') { if (args.start > state.loopEnd) throw new Error('start beyond end'); state.loopStart = args.start; }
         if (typeof args.end === 'number') { if (args.end < state.loopStart) throw new Error('end before start'); state.loopEnd = args.end; }
         if (typeof args.enable === 'boolean') state.loop = args.enable;
         return {};
       case 'selectTrack': state.selected = args.exclusive === false ? [...state.selected, args.name] : [args.name]; return { selected: state.selected };
       case 'command':
-        if (args.name === 'Insert Instrument Part' && insertWorks) state.parts.push({ name: 'P', start: state.loopStart, end: state.loopEnd, noteCount: 0 });
+        // like Studio One 7.2.3: the part lands at a fixed spot, whatever the loop or playhead say
+        if (args.name === 'Insert Instrument Part' && insertWorks) state.parts.push({ name: 'P', start: insertAt[0], end: insertAt[1], noteCount: 0 });
         return { executed: insertWorks };
       case 'notes': return { track: args.track, parts: state.parts };
       case 'trackTask': {
         const o = args.ops[0];
+        if (o.op === 'events') return { results: [{ op: 'events', events: state.parts.map((p, i) => ({ number: i + 1, name: p.name, start: p.start, end: p.end })) }] };
+        if (o.op === 'editEvent') {
+          const p = state.parts[o.event - 1];
+          p.start = o.to; p.end = o.end;
+          return { results: [{ op: 'editEvent', done: noResize ? ['move'] : ['move', 'resize'] }] };
+        }
         return { results: [{ op: o.op, track: o.track, part: 'P', added: o.notes.length, errors: [] }] };
       }
       default: throw new Error(`unexpected ${op}`);
@@ -37,20 +43,32 @@ function bridge({ parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, 
   return { call, calls, state };
 }
 
-test('createPart: loop to the bar range, insert, restore loop and selection', async () => {
+test('createPart: insert, then move and resize the new part to the bar range; selection restored, loop untouched', async () => {
   const b = bridge();
   const r = await createPart(b.call, { track: 'Keys', bar: 3, bars: 2 });
   assert.deepEqual(r, { track: 'Keys', part: { start: 4, end: 8 } });
+  assert.deepEqual(b.state.parts.map((p) => [p.start, p.end]), [[4, 8]]);
   assert.deepEqual([b.state.loopStart, b.state.loopEnd, b.state.loop], [10, 20, false]);
   assert.deepEqual(b.state.selected, ['Vox']);
   assert.ok(b.calls.some(([op, a]) => op === 'command' && a.category === 'Instrument Parts' && a.name === 'Insert Instrument Part'));
 });
 
-test('createPart restores the loop even when the insert fails', async () => {
+test('createPart moves the new part, not an existing one (even one at the insert spot)', async () => {
+  const b = bridge({ parts: [{ name: 'Old', start: 0, end: 2, noteCount: 4 }, { name: 'Stale', start: 7, end: 9, noteCount: 0 }] });
+  await createPart(b.call, { track: 'Keys', bar: 5, bars: 1 });
+  assert.deepEqual(b.state.parts.map((p) => [p.name, p.start, p.end]).sort(), [['Old', 0, 2], ['P', 8, 10], ['Stale', 7, 9]]);
+});
+
+test('createPart fails loudly when an old device does not resize', async () => {
+  const b = bridge({ noResize: true });
+  await assert.rejects(createPart(b.call, { track: 'Keys', bar: 1, bars: 4 }), /did not resize the new part/);
+});
+
+test('createPart restores the selection even when the insert fails, and moves nothing', async () => {
   const b = bridge({ insertWorks: false });
   await assert.rejects(createPart(b.call, { track: 'Keys', bar: 1 }), /could not insert an instrument part/);
-  assert.deepEqual([b.state.loopStart, b.state.loopEnd, b.state.loop], [10, 20, false]);
   assert.deepEqual(b.state.selected, ['Vox']);
+  assert.ok(!b.calls.some(([op, a]) => op === 'trackTask' && a.ops[0].op === 'editEvent'));
 });
 
 test('writeNotes: creates a part covering every note (rounded up to whole bars), names → MIDI', async () => {
@@ -59,7 +77,7 @@ test('writeNotes: creates a part covering every note (rounded up to whole bars),
   assert.equal(r.createdPart, true);
   assert.equal(r.added, 2);
   assert.deepEqual(b.state.parts.map((p) => [p.start, p.end]), [[2, 6]]); // bar 2 → 2 s; 5 beats → 2 bars → 4 s
-  const task = b.calls.find(([op]) => op === 'trackTask')[1].ops[0];
+  const task = b.calls.find(([op, a]) => op === 'trackTask' && a.ops[0].op === 'addNotes')[1].ops[0];
   assert.deepEqual(task, { op: 'addNotes', track: 'Keys', at: 2, notes: [{ pitch: 60, beat: 0, length: 4, velocity: 100 }, { pitch: 64, beat: 3, length: 2, velocity: 100 }] });
 });
 
@@ -76,7 +94,7 @@ test('writeChords: progression → voiced, rhythmized notes at song beats', asyn
   const b = bridge();
   const r = await writeChords(b.call, { track: 'Keys', bar: 1, progression: 'Cm | Ab' });
   assert.deepEqual(r.chords, ['Cm', 'Ab']);
-  const notes = b.calls.find(([op]) => op === 'trackTask')[1].ops[0].notes;
+  const notes = b.calls.find(([op, a]) => op === 'trackTask' && a.ops[0].op === 'addNotes')[1].ops[0].notes;
   assert.deepEqual(notes.map((n) => [n.pitch, n.beat, n.length]), [[60, 0, 4], [63, 0, 4], [67, 0, 4], [68, 4, 4], [72, 4, 4], [75, 4, 4]]);
 });
 
@@ -85,22 +103,6 @@ test('writeDrums: grid over bars', async () => {
   const r = await writeDrums(b.call, { track: 'Drums', bar: 1, bars: 2, pattern: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
   assert.equal(r.added, 12);
   assert.deepEqual(b.state.parts.map((p) => [p.start, p.end]), [[0, 4]]);
-});
-
-test('createPart restores the loop exactly when the part lies before or after the original loop', async () => {
-  const a = bridge();
-  await createPart(a.call, { track: 'Keys', bar: 1 });
-  assert.deepEqual([a.state.loopStart, a.state.loopEnd, a.state.loop], [10, 20, false]);
-  const b = bridge({ loopStart: 0, loopEnd: 1 });
-  const r = await createPart(b.call, { track: 'Keys', bar: 20 });
-  assert.deepEqual(r.part, { start: 38, end: 40 });
-  assert.deepEqual([b.state.loopStart, b.state.loopEnd, b.state.loop], [0, 1, false]);
-});
-
-test('createPart: a failing loop restore neither skips the selection restore nor masks the insert error', async () => {
-  const b = bridge({ insertWorks: false, failRestore: true });
-  await assert.rejects(createPart(b.call, { track: 'Keys', bar: 1 }), /could not insert an instrument part/);
-  assert.deepEqual(b.state.selected, ['Vox']);
 });
 
 test('writeNotes validates notes before moving the playhead', async () => {

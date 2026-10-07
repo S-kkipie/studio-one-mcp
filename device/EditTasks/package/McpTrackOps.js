@@ -248,7 +248,8 @@ mtoOps.events = function (context, op) {
 	return { track: op.track, events: out };
 };
 
-// { track, event, to?, toTrack?, gainDb?, addGainDb?, fadeIn?, fadeOut? }: edits in that order.
+// { track, event, to?, end?, toTrack?, gainDb?, addGainDb?, fadeIn?, fadeOut? }: edits in that order.
+// end (seconds) resizes the event to end there, after any move (how a new part gets its length).
 mtoOps.editEvent = function (context, op) {
 	var f = context.functions;
 	var root = f ? f.root : null;
@@ -265,6 +266,12 @@ mtoOps.editEvent = function (context, op) {
 		if (pos === null || !mtoFn(f, "moveEvent")) { f.executeImmediately = false; return { error: "cannot move to " + op.to }; }
 		f.moveEvent(ev, pos);
 		done.push("move");
+	}
+	if (typeof op.end === "number") {
+		var endPos = mtoIn(context, op.end, ev.timeFormat);
+		if (endPos === null || endPos <= ev.start || !mtoFn(f, "resizeEvent")) { f.executeImmediately = false; return { error: "cannot resize to end at " + op.end }; }
+		f.resizeEvent(ev, ev.start, ev.offset, endPos - ev.start);
+		done.push("resize");
 	}
 	var audio = null;
 	var wantsAudio = typeof op.gainDb === "number" || typeof op.addGainDb === "number" || typeof op.fadeIn === "number" || typeof op.fadeOut === "number";

@@ -477,7 +477,7 @@ const PITCH = z.union([z.number().int(), z.string()]).describe('MIDI number or a
 
 server.tool(
   'live_create_part',
-  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The loop range and track selection are put back. One live_undo removes it.',
+  'Create an empty instrument part on an instrument track in the running Studio One, from bar `bar` for `bars` bars (4/4). The track selection is put back. One live_undo removes it.',
   { track: z.string(), bar: z.number().int().describe('1-based bar'), bars: z.number().int().optional().describe('Default 1') },
   guard((a) => createPart(call, a)),
 );
@@ -778,12 +778,13 @@ server.tool(
 
 server.tool(
   'live_events',
-  "One event (audio clip or instrument part) on a track in the running Studio One. list: the track's events, numbered in time order, with start/end in seconds and, for audio, gain (dB) and fade lengths. edit {event, and any of: to (new start), to_track (move it to another track), gain_db (set), add_gain_db, fade_in / fade_out (seconds, audio)}: one live_undo reverts the whole edit. duplicate {event, times}: copies right after it, times times. copy {event, to, to_track?}: pastes a copy at a position (uses the clipboard). Positions are seconds or bars like \"9.1.1.0\".",
+  "One event (audio clip or instrument part) on a track in the running Studio One. list: the track's events, numbered in time order, with start/end in seconds and, for audio, gain (dB) and fade lengths. edit {event, and any of: to (new start), end (new end), to_track (move it to another track), gain_db (set), add_gain_db, fade_in / fade_out (seconds, audio)}: one live_undo reverts the whole edit. duplicate {event, times}: copies right after it, times times. copy {event, to, to_track?}: pastes a copy at a position (uses the clipboard). Positions are seconds or bars like \"9.1.1.0\".",
   {
     track: z.string(),
     action: z.enum(['list', 'edit', 'duplicate', 'copy']).optional(),
     event: z.union([z.number().int(), z.string()]).optional().describe('Event number (from list) or name'),
     to: TIME.optional(),
+    end: TIME.optional().describe('edit: resize the event to end here (instrument parts), after any move'),
     to_track: z.string().optional(),
     gain_db: z.number().optional(),
     add_gain_db: z.number().optional(),

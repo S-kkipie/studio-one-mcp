@@ -43,7 +43,7 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_plugins` / `live_add_plugin` | The installed plug-ins by name (PreSonus, VST and AU): effects, or instruments with `kind: "instrument"`. Add an effect to a channel's inserts by name; one undo removes it. |
 | `live_add_send` | Add an effect send: Studio One makes a new FX channel with the plug-in and a send to it (a reverb or delay send). Sending to an existing bus is not reachable from scripts, and this is not reliably undone. |
 | `live_add_instrument_track` | Add an instrument track with a new instance of an instrument by name (Mai Tai, Presence…). One undo removes both. |
-| `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the loop range and selection; one undo removes it. |
+| `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the selection; one undo removes it. |
 | `live_write_notes` | Write notes (MIDI numbers or names like `C3`, middle C = C3) on an instrument track from a bar, making a part to cover them if there is none; one undo per call. |
 | `live_write_chords` | Write a chord progression like `Cm7 \| Ab \| Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; one undo per call. |
 | `live_write_drums` | Write a drum pattern from one `x`/`X`/`.` string per General MIDI lane (kick, snare, hat...) from a bar, repeated for N bars; one undo per call. |

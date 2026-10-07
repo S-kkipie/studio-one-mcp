@@ -62,7 +62,7 @@ Pitches accept MIDI numbers or names with Studio One's convention, **middle C = 
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `live_create_part` | `track`, `bar`, `bars` | Save loop range → set loop to range → select track → `Instrument Parts/Insert Instrument Part` → restore loop range and loop state. Returns the part. |
+| `live_create_part` | `track`, `bar`, `bars` | Select track → `Instrument Parts/Insert Instrument Part` (lands at a fixed one-bar spot on 7.2.3) → move and resize the new part with the edit task (`editEvent` to + end) → restore selection. Returns the part. |
 | `live_write_notes` | `track`, `bar`, `notes[{pitch, beat, length, velocity?}]`, `create_part` (default true) | Creates a part covering the notes if none covers `bar`, then `addNotes`. Beats are relative to `bar`. |
 | `live_write_chords` | `track`, `bar`, `progression` (`"Cm7 \| Ab \| Eb \| Bb"`), `bars_per_chord` (1), `voicing` (`close`\|`open`\|`drop2`, default close), `octave` (3), `rhythm` (`sustain`\|`eighths`\|`quarters`\|`arp_up`\|`arp_down`), `velocity` (90) | Theory module → notes → `live_write_notes`. |
 | `live_write_drums` | `track`, `bar`, `bars` (1), `pattern` {`kick`: `"x...x...x...x..."`, …}, `steps_per_beat` (4), `velocity` (100, `X` = accent 120) | Lanes map to General MIDI pitches (kick 36, snare 38, clap 39, rim 37, closed_hat 42, open_hat 46, pedal_hat 44, low_tom 45, mid_tom 47, high_tom 50, crash 49, ride 51); a raw MIDI number is also accepted as lane name. Pattern repeats for `bars`. |
