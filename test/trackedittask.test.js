@@ -10,7 +10,7 @@ const pkg = (f) => readFileSync(fileURLToPath(new URL(`../device/EditTasks/packa
 const source = pkg('McpTrackEdit.js');
 const MAILBOX = 'file:///mb/';
 
-function load() {
+function load(extraHost = {}) {
   const files = new Map();
   const Host = {
     Url: (u) => ({ url: u }),
@@ -21,6 +21,7 @@ function load() {
     },
     Results: { kResultOk: 0 },
     Interfaces: { IEditTask: 'IEditTask' },
+    ...extraHost,
   };
   const ctx = vm.createContext({ Host, McpEditConfig: { mailbox: MAILBOX } });
   // include_file loads package files into the same context, as Studio One does.
@@ -335,4 +336,81 @@ test('addNotes: a note that runs past the part end is an error and is skipped', 
   assert.equal(results[0].added, 1);
   assert.deepEqual(results[0].errors, ['note 2: ends after the part', 'note 3: ends after the part']);
   assert.deepEqual(s.notes.map((n) => n.pitch), [60]);
+});
+
+// ---- presets, insert at position, slot commands ----
+
+function deviceSong() {
+  const log = [];
+  const presetObjs = ['P-kick', 'P-snare'];
+  const names = ['Sin preset', 'Kick 1', 'Snare 1'];
+  const pl = {
+    max: 2, string: '', shouldShowFolders() {}, setMetaInfo(a) { log.push(['meta', a]); },
+    set value(i) { this.string = names[i]; },
+    getValueAt: (i) => presetObjs[i - 1],
+  };
+  const host = { Classes: { createInstance: (n) => (n === 'Host:PresetParam' ? pl : null) }, Attributes: (a) => a };
+  const slot = { interpretCommand: (c, n, chk) => { log.push(['cmd', c, n, chk]); return 1; } };
+  const inserts = { find: (n) => (n === 'FX01' || n === 'FX07' ? slot : null) };
+  const channel = { label: 'Vox', find: (n) => (n === 'Inserts' ? inserts : null) };
+  const context = {
+    functions: {
+      root: {
+        environment: { find: () => ({ getChannelList: () => ({ numChannels: 1, getChannel: () => channel }) }) },
+        createFunctions: () => ({ insertDevice: (f, what, pos) => { log.push(['insert', f === inserts, what, pos]); return { name: 'FX02' }; } }),
+      },
+    },
+  };
+  return { host, context, log };
+}
+
+function runDevice(ops) {
+  const s = deviceSong();
+  const t = load(s.host);
+  t.request(ops);
+  t.task.performEdit(s.context);
+  return { results: t.result().results, log: s.log };
+}
+
+test('listPresets returns the names without the no-preset entry', () => {
+  const { results, log } = runDevice([{ op: 'listPresets', cid: '{X}' }]);
+  assert.deepEqual(results[0].presets, [{ index: 1, name: 'Kick 1' }, { index: 2, name: 'Snare 1' }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(log[0])), ['meta', ['Class:ID', '{X}']]);
+});
+
+test('insertPreset passes the matching preset object and the position to insertDevice', () => {
+  const { results, log } = runDevice([{ op: 'insertPreset', channel: 'Vox', cid: '{X}', preset: 'Snare 1', position: 1 }]);
+  assert.deepEqual([results[0].channel, results[0].slot], ['Vox', 'FX02']);
+  assert.deepEqual(log.filter((l) => l[0] === 'insert'), [['insert', true, 'P-snare', 1]]);
+});
+
+test('insertPreset without a preset inserts the class, appending when no position is given', () => {
+  const { results, log } = runDevice([{ op: 'insertPreset', channel: 'Vox', cid: '{X}' }]);
+  assert.equal(results[0].channel, 'Vox');
+  assert.deepEqual(log.filter((l) => l[0] === 'insert'), [['insert', true, '{X}', undefined]]);
+});
+
+test('insertPreset with an unknown preset is an error and inserts nothing', () => {
+  const { results, log } = runDevice([{ op: 'insertPreset', channel: 'Vox', cid: '{X}', preset: 'Nope', position: 0 }]);
+  assert.match(results[0].error, /no preset named/);
+  assert.equal(log.filter((l) => l[0] === 'insert').length, 0);
+});
+
+test('slotCommand Remove checks the command, then runs it', () => {
+  const { results, log } = runDevice([{ op: 'slotCommand', channel: 'Vox', slot: 0, command: 'Remove' }]);
+  assert.deepEqual([results[0].channel, results[0].slot, results[0].command, results[0].done], ['Vox', 0, 'Remove', true]);
+  assert.deepEqual(log, [['cmd', 'Device', 'Remove', true], ['cmd', 'Device', 'Remove', false]]);
+});
+
+test('slotCommand on a missing slot, or an unknown command, is an error', () => {
+  const { results } = runDevice([{ op: 'slotCommand', channel: 'Vox', slot: 3, command: 'Remove' }, { op: 'slotCommand', channel: 'Vox', slot: 0, command: 'Explode' }]);
+  assert.match(results[0].error, /no plug-in in slot/);
+  assert.match(results[1].error, /command must be/);
+});
+
+test('slotCommand with a name addresses that FX slot instead of the index', () => {
+  const { results, log } = runDevice([{ op: 'slotCommand', channel: 'Vox', command: 'Bypass', name: 'FX07' }, { op: 'slotCommand', channel: 'Vox', command: 'Bypass', name: 'FX09' }]);
+  assert.equal(results[0].done, true);
+  assert.match(results[1].error, /no plug-in in slot/);
+  assert.equal(log.length, 2);
 });

@@ -509,3 +509,76 @@ mtoOps.addNotes = function (context, op) {
 	}
 	return { track: op.track, part: part.name, added: added, errors: errors };
 };
+
+// ---- plug-in presets, insert at a position, slot commands -----------------------
+
+function mtoPresetList(cid) {
+	if (!Host.Classes || !mtoFn(Host.Classes, "createInstance")) return { error: "the preset list is not available" };
+	var pl = Host.Classes.createInstance("Host:PresetParam");
+	if (!pl || !mtoFn(pl, "shouldShowFolders") || !mtoFn(pl, "setMetaInfo") || !mtoFn(pl, "getValueAt")) return { error: "the preset list is not available" };
+	pl.shouldShowFolders(true);
+	pl.setMetaInfo(Host.Attributes(["Class:ID", String(cid)]));
+	var items = [];
+	var max = typeof pl.max === "number" ? pl.max : 0;
+	for (var i = 1; i <= max; i++) {
+		pl.value = i;
+		items.push({ index: i, name: String(pl.string) });
+	}
+	return { list: pl, items: items };
+}
+
+// { cid } -> { presets: [{ index, name }] } (index 0, "no preset", is left out)
+mtoOps.listPresets = function (context, op) {
+	if (!op.cid) return { error: "cid is required" };
+	var r = mtoPresetList(op.cid);
+	if (r.error) return r;
+	return { presets: r.items };
+};
+
+// { channel, cid, preset?, position? }
+mtoOps.insertPreset = function (context, op) {
+	if (!op.cid) return { error: "cid is required" };
+	var c = mtoChannel(context, op.channel);
+	if (c.error) return c;
+	var folder = mtoFn(c.channel, "find") ? c.channel.find("Inserts") : null;
+	if (!folder) return { error: op.channel + " has no inserts to add to" };
+	var dev = mtoDeviceFunctions(context);
+	if (!dev) return { error: "insertDevice is not available" };
+	var what = String(op.cid);
+	if (op.preset) {
+		var r = mtoPresetList(op.cid);
+		if (r.error) return r;
+		var hit = -1;
+		for (var i = 0; i < r.items.length; i++) if (r.items[i].name === op.preset) { hit = r.items[i].index; break; }
+		if (hit < 0) return { error: "no preset named " + op.preset };
+		what = r.list.getValueAt(hit);
+		if (!what) return { error: "no preset named " + op.preset };
+	}
+	var slot = typeof op.position === "number" ? dev.insertDevice(folder, what, op.position) : dev.insertDevice(folder, what);
+	if (!slot) return { error: "Studio One did not add the plug-in" };
+	return { channel: op.channel, slot: typeof slot.name === "string" ? slot.name : "" };
+};
+
+// { channel, slot (0-based), command: Remove | Bypass | Edit, name? }
+// Seen on 7.2.3: the folder children are named FXnn in creation order, NOT by position (a plug-in
+// inserted at position 0 is FX02 while the older one, now at position 1, stays FX01), and the
+// folder offers no way to list its children. So "FX" + (slot+1) is only right when nothing was
+// inserted before another; `name` (the "slot" insertPreset returns, e.g. "FX02") addresses a slot exactly.
+mtoOps.slotCommand = function (context, op) {
+	var cmd = String(op.command);
+	if (cmd !== "Remove" && cmd !== "Bypass" && cmd !== "Edit") return { error: "command must be Remove, Bypass or Edit" };
+	if (!op.name && (typeof op.slot !== "number" || op.slot < 0 || op.slot % 1 !== 0)) return { error: "slot must be a 0-based index" };
+	var c = mtoChannel(context, op.channel);
+	if (c.error) return c;
+	var folder = mtoFn(c.channel, "find") ? c.channel.find("Inserts") : null;
+	if (!folder || !mtoFn(folder, "find")) return { error: op.channel + " has no inserts" };
+	var n = op.slot + 1;
+	var obj = folder.find(op.name ? String(op.name) : "FX" + (n < 10 ? "0" : "") + n);
+	if (!obj) return { error: "no plug-in in slot " + op.slot + " of " + op.channel };
+	if (!mtoFn(obj, "interpretCommand")) return { error: "slot " + op.slot + " takes no commands" };
+	if (!obj.interpretCommand("Device", cmd, true)) return { error: cmd + " is not available for slot " + op.slot + " of " + op.channel };
+	var done = !!obj.interpretCommand("Device", cmd, false);
+	var res = { channel: op.channel, slot: op.slot, command: cmd, done: done };
+	if (op.name) res.name = String(op.name);
+	return res;
+};

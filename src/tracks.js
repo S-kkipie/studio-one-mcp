@@ -134,3 +134,19 @@ export async function addFxSend(call, { channel, plugin }) {
   const [s] = await call('sends', { channel });
   return { channel, plugin: r.added, fxChannel: fx[0] ?? null, sends: s ? s.sends : [], note: 'Not reliably undone by live_undo: remove the send and FX channel in Studio One, or mute the send with live_set_send.' };
 }
+
+// Presets of a plug-in class, insert (a class or one of its presets) at a slot, and
+// Remove / Bypass / Edit on a slot, through the MCP Track Edit task.
+export async function listPresets(call, cid) {
+  return trackTask(call, { op: 'listPresets', cid });
+}
+
+export async function insertPreset(call, { channel, cid, preset, position }) {
+  return trackTask(call, { op: 'insertPreset', channel, cid, preset, position });
+}
+
+// `name` (the slot insertPreset returned, e.g. "FX02") addresses a slot exactly; the FXnn names are in
+// creation order, not by position, so `slot` alone is only reliable when nothing was inserted before another.
+export async function slotCommand(call, { channel, slot, command, name }) {
+  return trackTask(call, { op: 'slotCommand', channel, slot, command, name });
+}
