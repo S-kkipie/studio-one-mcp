@@ -63,6 +63,20 @@ public static class S1McpDialog {
     if (e != IntPtr.Zero && Cls(e) == "Edit") return e;
     return FirstOf(dlg, "Edit");
   }
+  public static IntPtr FirstVisible(IntPtr dlg, string cls) { foreach (var h in Kids(dlg)) if (Cls(h) == cls && IsWindowVisible(h)) return h; return IntPtr.Zero; }
+  static IntPtr VisibleEditWithId(IntPtr dlg, int id) {
+    foreach (var h in Kids(dlg)) if (Cls(h) == "Edit" && GetDlgCtrlIdOf(h) == id && IsWindowVisible(h)) return h;
+    return IntPtr.Zero;
+  }
+  // Export (Vista save) dialogs: the path goes into a VISIBLE filename Edit only (0x3E9, then 0x47C,
+  // then the first visible Edit), never into a hidden one such as the address bar's, which could
+  // save elsewhere and overwrite another preset.
+  public static IntPtr ExportField(IntPtr dlg) {
+    IntPtr e = VisibleEditWithId(dlg, 0x3E9);
+    if (e == IntPtr.Zero) e = VisibleEditWithId(dlg, 0x47C);
+    if (e == IntPtr.Zero) e = FirstVisible(dlg, "Edit");
+    return e;
+  }
   [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
   static int GetDlgCtrlIdOf(IntPtr h) { return GetDlgCtrlID(h); }
   public static string GetText(IntPtr h) { var sb = new StringBuilder(4096); IntPtr r; SendMessageTimeout(h, 0x000D, (IntPtr)4096, sb, SMTO_ABORTIFHUNG, 2000, out r); return sb.ToString(); }
@@ -137,6 +151,8 @@ function IsPresetDialog($h) {
 
 if ($mode -eq 'cancel') {
   $done = New-Object 'System.Collections.Generic.HashSet[long]'
+  $tries = @{}
+  $maxTries = 5
   $titles = @()
   if ($target -le 0) { Emit @{ ok = $false; error = 'no Studio One process id' }; exit 0 }
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -145,10 +161,21 @@ if ($mode -eq 'cancel') {
       if (-not (IsNew $h) -or $done.Contains($h.ToInt64())) { continue }
       if (IsPresetDialog $h) {
         $t = [S1McpDialog]::Title($h)
+        $k = $h.ToInt64()
+        if (-not $tries.ContainsKey($k)) { $tries[$k] = 0 }
+        $tries[$k]++
         [void][S1McpDialog]::Click($h, 2)
-        [void]$done.Add($h.ToInt64())
-        $titles += $t
-        Emit @{ event = 'cancelled'; title = $t }
+        # Done only once it is gone; else press Cancel again on the next rounds (bounded).
+        $w = [Diagnostics.Stopwatch]::StartNew()
+        while ($w.ElapsedMilliseconds -lt 500 -and [S1McpDialog]::Shown($h)) { Start-Sleep -Milliseconds 50 }
+        if (-not [S1McpDialog]::Shown($h)) {
+          [void]$done.Add($k)
+          $titles += $t
+          Emit @{ event = 'cancelled'; title = $t }
+        } elseif ($tries[$k] -ge $maxTries) {
+          [void]$done.Add($k)
+          Emit @{ event = 'cancel-failed'; title = $t }
+        }
       }
     }
     Start-Sleep -Milliseconds 100
@@ -192,7 +219,8 @@ try {
   $title = [S1McpDialog]::Title($dlg)
   $dlgOwner = [S1McpDialog]::Owner($dlg).ToInt64()
   Emit @{ event = 'found'; title = $title; known = ($title -match $knownTitles); filters = [S1McpDialog]::Filters($dlg) }
-  $edit = [S1McpDialog]::FileField($dlg)
+  $edit = if ($expect -eq 'export') { [S1McpDialog]::ExportField($dlg) } else { [S1McpDialog]::FileField($dlg) }
+  if ($edit -eq [IntPtr]::Zero) { throw "the dialog has no visible filename field" }
   # The dialog may still be filling in its default name: set, read back, retry.
   $took = $false
   for ($i = 0; $i -lt 10 -and -not $took; $i++) {

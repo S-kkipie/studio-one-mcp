@@ -127,3 +127,31 @@ test('the script: only NEW dialogs of the given process that pass the preset-fil
   const cancelBlock = s.slice(s.indexOf("if ($mode -eq 'cancel')"), s.indexOf("if ($mode -ne 'fill')"));
   assert.ok(cancelBlock.includes('Click($h, 2)') && !/Click\(\$h, 1\)|Click\(\$h, 6\)/.test(cancelBlock));
 });
+
+test('the script: the export field is a VISIBLE Edit, 0x3E9 first, then 0x47C, then the first visible Edit', () => {
+  const s = SCRIPT;
+  const m = /public static IntPtr ExportField\(IntPtr dlg\) \{([\s\S]*?)\n  \}/.exec(s);
+  assert.ok(m, 'ExportField exists');
+  const body = m[1];
+  const i3e9 = body.indexOf('0x3E9');
+  const i47c = body.indexOf('0x47C');
+  const iFirst = body.indexOf('FirstVisible');
+  assert.ok(i3e9 >= 0 && i47c > i3e9 && iFirst > i47c, 'order 0x3E9, 0x47C, first visible Edit');
+  assert.match(body, /VisibleEditWithId\(dlg, 0x3E9\)/);
+  assert.match(s, /static IntPtr VisibleEditWithId\(IntPtr dlg, int id\) \{\s*\n[^\n]*IsWindowVisible/);
+  assert.match(s, /public static IntPtr FirstVisible\(IntPtr dlg, string cls\) \{[^\n]*IsWindowVisible/);
+  // The fill uses it for export dialogs.
+  assert.match(s, /\$edit = if \(\$expect -eq 'export'\) \{ \[S1McpDialog\]::ExportField\(\$dlg\) \}/);
+});
+
+test('the script: cancel mode marks a dialog done only once it is gone, with bounded retries', () => {
+  const s = SCRIPT;
+  const cancelBlock = s.slice(s.indexOf("if ($mode -eq 'cancel')"), s.indexOf("if ($mode -ne 'fill')"));
+  assert.match(cancelBlock, /\$tries/);
+  assert.match(cancelBlock, /Shown\(\$h\)/);
+  const click = cancelBlock.indexOf('Click($h, 2)');
+  const shown = cancelBlock.indexOf('Shown($h)', click);
+  const done = cancelBlock.indexOf('$done.Add', click);
+  assert.ok(click >= 0 && shown > click && done > shown, 'Shown re-check between Click and done');
+  assert.match(cancelBlock, /-ge \$maxTries/);
+});
