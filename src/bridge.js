@@ -1,5 +1,5 @@
 // Client side of the file mailbox (see device/StudioOneMCP/BridgeComponent.js).
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mailboxDir } from './paths.js';
@@ -25,6 +25,24 @@ export function bridgeStatus(dir = mailboxDir) {
   return { loaded: true, ...s };
 }
 
+// On Windows the rename fails (EPERM/EACCES/EBUSY) while Studio One still has request.json open,
+// which happens for a moment after it loaded or unloaded a plug-in instance: retry for a while.
+export async function placeRequest(tmp, dest, { rename = renameSync, waitMs = 5000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      rename(tmp, dest);
+      return;
+    } catch (e) {
+      if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code) || Date.now() >= deadline) {
+        try { unlinkSync(tmp); } catch { /* best effort */ }
+        throw e;
+      }
+      await sleep(50);
+    }
+  }
+}
+
 let queue = Promise.resolve();
 
 // One request in flight at a time: the mailbox has a single slot.
@@ -36,7 +54,7 @@ export function call(op, args = {}, { timeoutMs = 5000, dir = mailboxDir, nudge 
     const id = randomUUID();
     const tmp = join(dir, `request.${id}.tmp`);
     writeFileSync(tmp, JSON.stringify({ id, op, args }) + '\n');
-    renameSync(tmp, join(dir, 'request.json'));
+    await placeRequest(tmp, join(dir, 'request.json'), { waitMs: timeoutMs });
     const deadline = Date.now() + timeoutMs;
     let lastNudge = 0;
     while (Date.now() < deadline) {

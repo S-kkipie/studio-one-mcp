@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { scanAll, pythonRunner, defaultPython } from '../src/plugins/scan.js';
+import { scanAll, pythonRunner, defaultPython, defaultRoots } from '../src/plugins/scan.js';
 
 function setup() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-test-'));
@@ -68,6 +68,27 @@ test('unchanged file is skipped on second run', async () => {
   assert.equal(calls, 0);
   assert.equal(r.skipped, 3);
   assert.equal(r.scanned, 0);
+});
+
+test('entries of another catalog schema are rescanned even when the file is unchanged', async () => {
+  const { root, catalogDir } = setup();
+  await scanAll({ roots: [root], catalogDir, runner: okRunner });
+  assert.equal(read(catalogDir, 'Alpha').schema, 2);
+  const f = file(catalogDir, 'Alpha');
+  const old = JSON.parse(fs.readFileSync(f, 'utf8'));
+  delete old.schema;
+  fs.writeFileSync(f, JSON.stringify(old));
+  const seen = [];
+  const r = await scanAll({ roots: [root], catalogDir, runner: async (a) => { seen.push(path.basename(a.path)); return okRunner(a); } });
+  assert.deepEqual(seen, ['Alpha.vst3']);
+  assert.equal(r.skipped, 2);
+  assert.equal(read(catalogDir, 'Alpha').schema, 2);
+});
+
+test('default VST3 folders per platform', () => {
+  assert.deepEqual(defaultRoots('win32', 'C:/Users/u').slice(0, 1), ['C:/Program Files/Common Files/VST3']);
+  assert.deepEqual(defaultRoots('darwin', '/Users/u').slice(0, 2), ['/Library/Audio/Plug-Ins/VST3', path.join('/Users/u', 'Library', 'Audio', 'Plug-Ins', 'VST3')]);
+  assert.equal(defaultRoots('linux', '/home/u').filter((r) => /VST3$/.test(r) && !process.env.STUDIO_ONE_MCP_VST3_PATHS).length, 0);
 });
 
 test('changed mtime is rescanned', async () => {
@@ -181,6 +202,68 @@ test('xml_attr_map keys APVTS-style PARAM elements by id', { skip: !pyOk }, () =
   assert.equal(out['PARAM[id=mix]@value'], '0.2');
   assert.equal(out.inputGain, '1');
   assert.equal(out.value, undefined);
+});
+
+const pedalboardOk = pyOk && spawnSync(pyExe, ['-I', '-c', 'import pedalboard'], { encoding: 'utf8' }).status === 0;
+
+test('verify_scales: how each state attribute stores the displayed value, checked by loading edited states', { skip: !pedalboardOk && 'needs the scanner venv' }, () => {
+  // A fake plug-in whose XML state drives its parameters, like Archetype: percentages kept 0..1, dB
+  // as dB, a log-scaled frequency kept normalised (not linear: unverified), a pan choice kept -50..50.
+  const code = String.raw`import importlib.util,json,sys,struct,math
+spec=importlib.util.spec_from_file_location('sp',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+class P:
+    def __init__(s, typ, lo=None, hi=None, step=None, vals=None, fmt=str):
+        s.type, s.min_value, s.max_value, s.step_size, s.approximate_step_size = typ, lo, hi, step, None
+        s.valid_values, s.fmt, s.v = vals or [], fmt, None
+    @property
+    def string_value(s): return s.fmt(s.v)
+    @property
+    def raw_value(s): return 1.0 if s.v else 0.0
+pans = ['%d L' % (50 - i) for i in range(50)] + ['C'] + ['%d R' % i for i in range(1, 51)]
+prm = {
+  'drive': P(float, 0.0, 100.0, 1.0, fmt=lambda v: '%d %%' % round(v)),
+  'gain': P(float, -24.0, 24.0, 0.1, fmt=lambda v: '%.1f dB' % v),
+  'freq': P(float, 20.0, 20000.0, None, fmt=lambda v: '%.0f Hz' % v),
+  'pan': P(str, vals=pans, fmt=lambda v: v),
+  'on': P(bool, False, True, 1),
+}
+binds = {
+  'drive': ('overdriveDrive', lambda t: float(t) * 100),
+  'gain': ('inputGain', float),
+  'freq': ('lowFreq', lambda t: 20 * 1000 ** float(t)),
+  'pan': ('cabPan', lambda t: pans[int(float(t)) + 50]),
+  'on': ('active', lambda t: t == 'true'),
+}
+class Plug:
+    def __init__(s, xml): s.raw_state = m.vc2(xml)
+    @property
+    def raw_state(s): return m.vc2(s.xml)
+    @raw_state.setter
+    def raw_state(s, raw):
+        size = struct.unpack_from('<I', raw, 4)[0]
+        s.xml = raw[8:8 + size].rstrip(b'\x00').decode()
+        a = m.xml_attr_map(s.xml)
+        for k, (attr, f) in binds.items():
+            v = a[attr]
+            prm[k].v = f(v) if v is not None else None
+xml = '<appModel overdriveDrive="0.951" inputGain="0" lowFreq="0.5" cabPan="0" active="true"/>'
+p = Plug(xml)
+raw = bytes(p.raw_state)
+keys = {k: a for k, (a, f) in binds.items()}
+scales, unverified = m.verify_scales(p, raw, m.extract_xml(raw), m.xml_attr_map(xml), prm, keys)
+print(json.dumps({'scales': scales, 'unverified': unverified, 'xml': p.xml}))`;
+  const r = spawnSync(pyExe, ['-I', '-c', code, helperScript], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out.scales, { drive: 0.01, gain: 1, pan: { a: 1, b: -50 }, on: 1 });
+  assert.deepEqual(out.unverified, ['freq']);
+  assert.equal(out.xml, '<appModel overdriveDrive="0.951" inputGain="0" lowFreq="0.5" cabPan="0" active="true"/>', 'the default state is loaded back');
+});
+
+test('raw_with_xml swaps the XML inside JUCE\'s VST3 wrapper (base64 IComponent) and set_xml_attr edits one attribute', { skip: !pyOk }, () => {
+  const out = pyJson(`(lambda raw: m.extract_xml(m.raw_with_xml(raw, m.set_xml_attr('<a x="1" y="2"><PARAM id="d" value="0.5"/></a>', 'PARAM[id=d]@value', '0.25'))))(m.vc2('<VST3PluginState><IComponent>' + m.juce_b64_encode(m.vc2('<a x="1"/>')) + '</IComponent></VST3PluginState>'))`);
+  assert.equal(out.replace(/\0+$/, ''), '<a x="1" y="2"><PARAM id="d" value="0.25"/></a>');
 });
 
 test('signature expands synonyms and camelCase', { skip: !pyOk }, () => {

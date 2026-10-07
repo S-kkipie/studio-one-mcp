@@ -25,6 +25,7 @@ const preset = (xml = XML) => buildVstPreset({
 });
 
 const ENTRY = {
+  schema: 2,
   name: 'Archetype Petrucci X',
   vendor: 'Neural DSP',
   capabilities: { hostParams: true, stateRoundTrip: false, xmlState: true },
@@ -35,6 +36,7 @@ const ENTRY = {
     { key: 'no_state', name: 'No State' },
   ],
   stateKeys: { input_gain: 'inputGain', gate_active: 'gateActive', output_gain: 'outputGain', broken: 'notInXml' },
+  stateScale: { input_gain: 1, gate_active: 1, output_gain: 1, broken: 1 },
 };
 
 // A fake Studio One: one channel "Gtr" with an insert rack; every bridge call is logged.
@@ -203,6 +205,7 @@ test('writePluginParams: booleans are true/false where the state spells them so,
     ...ENTRY,
     params: [...ENTRY.params, { key: 'bypass', name: 'Bypass' }, { key: 'mono', name: 'Mono' }],
     stateKeys: { gate_active: 'gateActive', bypass: 'PARAM[id=bypass]@value', mono: 'PARAM[id=mono]@value' },
+    stateScale: { gate_active: 1, bypass: 1, mono: 1 },
   };
   const o = opts(st, { readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', ...parseState(preset(xml)), source: 'song-save' }) });
   const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { gate_active: false, bypass: true, mono: false }, entry }, o);
@@ -230,13 +233,91 @@ test('writePluginParams: unknown keys land in missing; parameter names resolve t
   assert.deepEqual(r2.applied, {});
   assert.deepEqual(r2.missing, ['nope']);
   assert.ok(!ops(st2).includes('insertPreset'));
+  assert.match(r2.note, /^Nothing was applied/);
+  assert.doesNotMatch(r2.note, /replaced/);
 });
 
-test('writePluginParams: { normalized } values become real units from the catalog range', async () => {
+test('writePluginParams: { normalized } is refused (the state is not linear in it), and so is an unverified key', async () => {
   const st = fakeStudio();
-  const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: { normalized: 0.75 } }, entry: ENTRY }, opts(st));
-  assert.deepEqual(r.applied, { input_gain: 12 });
-  assert.match(readJuceXml(parseVstPreset(st.written()).chunks[0].data), /inputGain="12"/);
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: { normalized: 0.75 } }, entry: ENTRY }, opts(st)), /Input Gain: \{ normalized \} is not accepted/);
+  const unverified = { ...ENTRY, stateScale: { gate_active: 1 }, unverifiedKeys: ['input_gain'] };
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 3 }, entry: unverified }, opts(st)), /Input Gain on Archetype Petrucci X cannot be set: the scan could not verify/);
+  const old = { ...ENTRY, schema: undefined, stateScale: undefined };
+  await assert.rejects(writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { input_gain: 3 }, entry: old }, opts(st)), /older scan.*run live_plugin_scan/);
+  assert.ok(!ops(st).includes('insertPreset'));
+});
+
+test('writePluginParams: values are converted to the state scale (Archetype keeps 0..1 for a 0..100 %)', async () => {
+  const st = fakeStudio();
+  const xml = '<appModel inputGain="0" overdriveDrive="0.951" cabPan="0" phaserMode="false"/>';
+  const entry = {
+    ...ENTRY,
+    params: [...ENTRY.params, { key: 'overdrive_drive', name: 'Overdrive Drive', label: '%', min: 0, max: 100 }, { key: 'cab_pan', name: 'Cab Pan', type: 'choice', choices: 101 }, { key: 'phaser_mode', name: 'Phaser Mode', type: 'choice', choices: 2 }],
+    stateKeys: { ...ENTRY.stateKeys, overdrive_drive: 'overdriveDrive', cab_pan: 'cabPan', phaser_mode: 'phaserMode' },
+    stateScale: { ...ENTRY.stateScale, overdrive_drive: 0.01, cab_pan: { a: 1, b: -50 }, phaser_mode: 1 },
+  };
+  const o = opts(st, { readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', ...parseState(preset(xml)), source: 'song-save' }) });
+  const r = await writePluginParams(st.call, { channel: 'Gtr', slot: 0, changes: { overdrive_drive: 50, input_gain: -6.5, cab_pan: 60, phaser_mode: 1 }, entry }, o);
+  assert.deepEqual(r.applied, { overdrive_drive: 50, input_gain: -6.5, cab_pan: 60, phaser_mode: 1 });
+  assert.equal(readJuceXml(parseVstPreset(st.written()).chunks[0].data), '<appModel inputGain="-6.5" overdriveDrive="0.5" cabPan="10" phaserMode="true"/>');
+});
+
+// The bridge gives up after its timeout while Studio One goes on: the call has happened, but threw.
+const lateAnswer = (st, task) => async (op, args, o) => {
+  const r = await st.call(op, args, o);
+  if (op === 'trackTask' && args.ops[0].op === task) throw new Error('Studio One did not answer "trackTask" within 30000ms.');
+  return r;
+};
+
+test('replace slot: an insert that timed out but happened carries on (the rack decides)', async () => {
+  const st = fakeStudio({ bypassed: true });
+  const r = await writePluginParams(lateAnswer(st, 'insertPreset'), { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st));
+  assert.equal(r.slotName, 'FX02');
+  assert.equal(r.warning, undefined);
+  assert.deepEqual(st.rack.map((s) => [s.fx, s.bypassed]), [['FX02', true]]);
+});
+
+test('replace slot: a remove that timed out but happened is a success, not a rollback', async () => {
+  const st = fakeStudio();
+  const r = await writePluginParams(lateAnswer(st, 'slotCommand'), { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st));
+  assert.equal(r.slotName, 'FX02');
+  assert.deepEqual(st.rack.map((s) => s.fx), ['FX02']);
+  assert.equal(ops(st).filter((x) => x === 'slotCommand').length, 1, 'no rollback remove');
+});
+
+test('replace slot: an insert that timed out and did not happen fails with the original error', async () => {
+  const st = fakeStudio();
+  const call = async (op, args, o) => {
+    if (op === 'trackTask' && args.ops[0].op === 'insertPreset') throw new Error('Studio One did not answer "trackTask" within 30000ms.');
+    return st.call(op, args, o);
+  };
+  await assert.rejects(writePluginParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)), /did not answer "trackTask"/);
+  assert.deepEqual(st.rack.map((s) => s.fx), ['FX01']);
+});
+
+test('replace slot: the bypass is not restored when the slot does not hold the new instance', async () => {
+  const st = fakeStudio({ bypassed: true });
+  let moved = false;
+  const call = async (op, args, o) => {
+    if (moved && op === 'insertSlotName' && args.slot === 0) return { name: 'FX09' };
+    const r = await st.call(op, args, o);
+    if (op === 'trackTask' && args.ops[0].op === 'slotCommand') moved = true;
+    return r;
+  };
+  const r = await writePluginParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st));
+  assert.match(r.warning, /slot 0 now holds FX09, not the new instance FX02; the bypass was not restored/);
+  assert.deepEqual(st.rack.map((s) => [s.fx, s.bypassed]), [['FX02', false]]);
+});
+
+test('rollback: the new instance is bypassed only if the slot holds it', async () => {
+  const st = fakeStudio({ remove: { FX01: 'error', FX02: 'error' } });
+  const call = async (op, args, o) => {
+    if (op === 'insertSlotName' && args.slot === 0 && st.log.filter(([x, t]) => x === 'trackTask' && t === 'slotCommand').length >= 2) return { name: 'FX07' };
+    return st.call(op, args, o);
+  };
+  await assert.rejects(writePluginParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 }, entry: ENTRY }, opts(st)),
+    /removing the new instance \(FX02\) failed too.*slot 0 holds FX07, not the new instance FX02, so nothing was bypassed/);
+  assert.deepEqual(st.rack.map((s) => [s.fx, s.bypassed]), [['FX02', false], ['FX01', false]]);
 });
 
 test('writePluginParams: polling the preset list times out with a clear error, and cleans up', async () => {

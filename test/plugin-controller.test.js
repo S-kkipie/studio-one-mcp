@@ -5,14 +5,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   backendFor, pickBackend, opaqueMessage, getParams, setParams, stateChange, pluginPresets, addPluginWithPreset, removePlugin, runScan,
 } from '../src/plugins/controller.js';
-import { replaceSlot } from '../src/plugins/state.js';
+import { replaceSlot, writePluginParams } from '../src/plugins/state.js';
+import { buildVstPreset, writeJuceXml, parseVstPreset, readJuceXml } from '../src/plugins/vstpreset.js';
 import { trackTask } from '../src/tracks.js';
 import { parsePluginCache, classIdFor } from '../src/plugins/classes.js';
 
 const ARCH = {
+  schema: 2,
   name: 'Archetype Petrucci X', vendor: 'Neural DSP',
   capabilities: { hostParams: true, stateRoundTrip: false, xmlState: true },
   params: [
@@ -21,12 +24,15 @@ const ARCH = {
     { key: 'no_state', name: 'No State' },
   ],
   stateKeys: { input_gain: 'inputGain', gate_active: 'gateActive' },
+  stateScale: { input_gain: 1, gate_active: 1 },
 };
 const MODO = { name: 'MODO BASS', vendor: 'IK', capabilities: { hostParams: false, stateRoundTrip: false, xmlState: false }, params: [{ key: 'bypass', name: 'Bypass' }] };
 const GOJIRA = { name: 'Archetype Gojira', capabilities: { hostParams: true, stateRoundTrip: false, xmlState: false }, params: [] };
 const BINARY = { name: 'Binary Synth', capabilities: { hostParams: true, stateRoundTrip: true, xmlState: false }, params: [{ key: 'cutoff', name: 'Cutoff' }] };
 const BROKEN = { name: 'AmpliTube 5', scanError: 'unsupported plug-in format|details', scanErrorKind: 'error' };
-const catalog = new Map([ARCH, MODO, GOJIRA, BINARY, BROKEN].map((e) => [e.name, e]));
+// An XML state whose attributes could not be mapped to any parameter: nothing to edit.
+const UNMAPPED = { name: 'Fortin Unmapped', capabilities: { hostParams: true, stateRoundTrip: false, xmlState: true }, params: [{ key: 'gain', name: 'Gain' }], stateKeys: {} };
+const catalog = new Map([ARCH, MODO, GOJIRA, BINARY, BROKEN, UNMAPPED].map((e) => [e.name, e]));
 const discover = (name) => ({ names: name === 'Pro EQ' ? ['lffreq', 'lfgain', 'hfgain'] : [], sources: [] });
 const pluginClass = (name) => ({ 'New VST3 Synth': { file: 'ABC/New VST3 Synth.vst3' }, 'Old VST2 Synth': { file: 'DEF/Old VST2 Synth.dll' } })[name] ?? null;
 
@@ -43,6 +49,7 @@ test('backendFor: native, state and opaque', () => {
   assert.equal(pickBackend('Some Unscanned Synth', catalog, { discover, pluginClass }).reason, 'unscanned');
   assert.equal(pickBackend('New VST3 Synth', catalog, { discover, pluginClass }).reason, 'unscanned');
   assert.equal(pickBackend('Old VST2 Synth', catalog, { discover, pluginClass }).reason, 'unsupported');
+  assert.deepEqual(pickBackend('Fortin Unmapped', catalog, { discover, pluginClass }), { backend: 'opaque', entry: UNMAPPED, reason: 'noState' });
 });
 
 test('backendFor: PreSonus names win over a catalog entry of the same name', () => {
@@ -127,6 +134,20 @@ test('setParams native: one change keeps the bridge shape, a batch returns resul
   ]);
 });
 
+test('setParams state: an unknown parameter, an unverified scale or { normalized } fail before Studio One is touched', async () => {
+  const { call, log } = fakeBridge({ Gtr: ['Archetype Petrucci X'] });
+  const writeParams = async () => assert.fail('must not write');
+  const deps = { catalog, discover, pluginClass, writeParams };
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Fuzz Amount': 3 } }, deps), { message: 'no parameter Fuzz Amount on Archetype Petrucci X (live_plugin_params lists them)' });
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { 'Fuzz Amount': '3 dB' } }, deps), { message: 'no parameter Fuzz Amount on Archetype Petrucci X (live_plugin_params lists them)' });
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: { normalized: 0.5 } } }, deps), /Input Gain: \{ normalized \} is not accepted/);
+  const half = new Map([[ARCH.name, { ...ARCH, stateScale: { gate_active: 1 }, unverifiedKeys: ['input_gain'] }]]);
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 3 } }, { ...deps, catalog: half }), /Input Gain on Archetype Petrucci X cannot be set: the scan could not verify/);
+  const old = new Map([[ARCH.name, { ...ARCH, schema: undefined, stateScale: undefined }]]);
+  await assert.rejects(setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 3 } }, { ...deps, catalog: old }), /older scan.*run live_plugin_scan/);
+  assert.ok(log.every(([op]) => op === 'inserts'));
+});
+
 test('setParams state: values converted, one write with the catalog entry', async () => {
   const { call } = fakeBridge({ Gtr: ['Archetype Petrucci X'] });
   let seen;
@@ -154,7 +175,7 @@ test('setParams state, binary flavour: text passes unchanged to the plug-in', as
   assert.deepEqual(seen.changes, { cutoff: '2 kHz' });
 });
 
-test('stateChange: units must match the catalog label, words to booleans, normalized kept', () => {
+test('stateChange: units must match the catalog label, words to booleans, normalized refused, choices range-checked', () => {
   const hz = { name: 'Freq', label: 'Hz', min: 20, max: 20000 };
   const pct = { name: 'Mix', label: '%', min: 0, max: 100 };
   const unit = { name: 'Amount', label: '', min: 0, max: 1 };
@@ -163,7 +184,7 @@ test('stateChange: units must match the catalog label, words to booleans, normal
   assert.equal(stateChange('2 kHz', hz), 2000);
   assert.equal(stateChange('440 hz', hz), 440);
   assert.equal(stateChange('250 ms', sec), 0.25);
-  assert.equal(stateChange('50%', pct), 50);
+  assert.equal(stateChange('50%', pct), 50, 'in the parameter units; the state scale is applied when writing');
   assert.throws(() => stateChange('50%', unit), { message: 'Amount is unitless; "50%" not understood' });
   assert.throws(() => stateChange('2 kHz', { name: 'Gain', label: 'dB', min: -24, max: 24 }), /Gain is in dB; "2 kHz" not understood/);
   assert.throws(() => stateChange('30000 Hz', hz), /Freq must be within 20\.\.20000 Hz; got 30000/);
@@ -174,7 +195,14 @@ test('stateChange: units must match the catalog label, words to booleans, normal
   assert.equal(stateChange('Clean Channel', undefined, { binary: true }), 'Clean Channel');
   assert.equal(stateChange(1, { min: false, max: true }), true);
   assert.equal(stateChange(1, { min: 0, max: 10 }), 1);
-  assert.deepEqual(stateChange({ normalized: 0.5 }), { normalized: 0.5 });
+  // A linear 0..1 of the catalog range is wrong for log tapers and for states that keep 0..1 themselves.
+  assert.throws(() => stateChange({ normalized: 0.5 }, pct), { message: "Mix: { normalized } is not accepted for third-party plug-ins (their saved state is not a linear 0..1 of the range); give the value in the parameter's units, as live_plugin_params shows it" });
+  assert.throws(() => stateChange({ normalized: 0.5 }, pct, { binary: true }), /not accepted/);
+  const amp = { name: 'Amp Type', type: 'choice', choices: 4, min: null, max: null };
+  assert.equal(stateChange(3, amp), 3);
+  assert.equal(stateChange('0', amp), 0);
+  assert.throws(() => stateChange(4, amp), { message: 'Amp Type is a choice of 4 (0..3, as live_plugin_params shows it); got 4' });
+  assert.throws(() => stateChange(1.5, amp), /choice of 4/);
 });
 
 test('stateChange: XML state refuses non-numeric text instead of writing it (live: "Clean" became Amp Type 0)', () => {
@@ -261,6 +289,106 @@ test('live_add_plugin with a preset inserts it from the preset list', async () =
   assert.deepEqual({ cid: ins.cid, preset: ins.preset, position: ins.position }, { cid: '{C}', preset: 'Kick', position: undefined });
   assert.equal(r.preset, 'Kick');
   assert.equal(r.slotName, 'FX02');
+});
+
+test('live_remove_plugin: a remove whose answer timed out but that happened is a success', async () => {
+  const racks = { Voc: ['Pro EQ', 'Compressor'] };
+  const { call } = taskBridge(racks, { slotCommand: () => { racks.Voc.splice(1, 1); throw new Error('Studio One did not answer "trackTask" within 30000ms.'); } });
+  const seen = [];
+  const spy = async (op, args, o) => { seen.push([op, o]); return call(op, args); };
+  const r = await removePlugin(spy, { channel: 'Voc', slot: 1 }, { closeWindows: async () => [] });
+  assert.equal(r.removed, 'Compressor');
+  assert.deepEqual(seen.find(([op]) => op === 'trackTask')[1], { timeoutMs: 30000 });
+  const notDone = taskBridge({ Voc: ['Pro EQ'] }, { slotCommand: () => { throw new Error('Studio One did not answer "trackTask" within 30000ms.'); } });
+  await assert.rejects(removePlugin(notDone.call, { channel: 'Voc', slot: 0 }, { closeWindows: async () => [] }), /did not answer/);
+});
+
+test('live_add_plugin with a preset: an insert whose answer timed out but that happened is a success', async () => {
+  const racks = { Voc: ['Pro EQ'] };
+  const { call } = taskBridge(racks, { listPresets: () => PRESETS, insertPreset: () => { racks.Voc.push('Pro EQ 2'); throw new Error('Studio One did not answer "trackTask" within 30000ms.'); } });
+  const seen = [];
+  const spy = async (op, args, o) => { if (op === 'trackTask') seen.push([args.ops[0].op, o]); return call(op, args); };
+  const r = await addPluginWithPreset(spy, { channel: 'Voc', plugin: 'Pro EQ', preset: 'Kick' }, { classIdFor: () => '{C}' });
+  assert.equal(r.slotName, 'FX02');
+  assert.deepEqual(r.inserts.map((i) => i.name), ['Pro EQ', 'Pro EQ 2']);
+  assert.deepEqual(seen.find(([op]) => op === 'insertPreset')[1], { timeoutMs: 30000 });
+  const notDone = taskBridge({ Voc: ['Pro EQ'] }, { listPresets: () => PRESETS, insertPreset: () => { throw new Error('Studio One did not answer "trackTask" within 30000ms.'); } });
+  await assert.rejects(addPluginWithPreset(notDone.call, { channel: 'Voc', plugin: 'Pro EQ', preset: 'Kick' }, { classIdFor: () => '{C}' }), /did not answer/);
+});
+
+test('session-changing plug-in operations run one at a time', async () => {
+  const { call } = fakeBridge({ Gtr: ['Archetype Petrucci X'], Voc: ['Pro EQ', 'Compressor'] });
+  const events = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const writeParams = async () => { events.push('write:start'); await gate; events.push('write:end'); return { applied: {} }; };
+  const removeCall = async (op, args, o) => {
+    if (op === 'insertSlotName') return { name: 'FX02' };
+    if (op === 'trackTask') { events.push('remove'); return { results: [{ done: true }] }; }
+    if (op === 'inserts') return call(op, args, o);
+    return call(op, args, o);
+  };
+  const a = setParams(call, { channel: 'Gtr', slot: 0, changes: { input_gain: 1 } }, { catalog, discover, pluginClass, writeParams });
+  const b = removePlugin(removeCall, { channel: 'Voc', slot: 1 }, { closeWindows: async () => { events.push('remove:start'); return []; } }).catch(() => null);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(events, ['write:start'], 'the remove waits for the write');
+  release();
+  await Promise.all([a, b]);
+  assert.deepEqual(events.slice(0, 3), ['write:start', 'write:end', 'remove:start']);
+});
+
+const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
+
+test('Archetype Petrucci X (real saved state + real scan): % values read and written on the plug-in scale', async () => {
+  // petrucci-state.xml: trimmed from a song's "Presets/Channels/<ch>/1 - Archetype Petrucci X.vstpreset";
+  // petrucci-catalog-entry.json: scan-plugin.py's entry for the keys in it.
+  const xml = fs.readFileSync(path.join(FIXTURES, 'petrucci-state.xml'), 'utf8');
+  const entry = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'petrucci-catalog-entry.json'), 'utf8'));
+  assert.equal(entry.stateScale.overdrive_drive, 0.01);
+  assert.equal(entry.stateScale.input_gain, 1);
+  const cat = new Map([[entry.name, entry]]);
+  const { call } = fakeBridge({ Gtr: ['Archetype Petrucci X'] });
+  const readState = async () => ({ xml, source: 'song-save', saved: true });
+  const r = await getParams(call, { channel: 'Gtr', slot: 0 }, { catalog: cat, discover, pluginClass, readState });
+  const v = Object.fromEntries(r.params.map((p) => [p.key, p.value]));
+  assert.equal(v.overdrive_drive, 95.1);
+  assert.equal(v.compressor_compression, 68.5);
+  assert.equal(v.wah_position, 100);
+  assert.equal(v.input_gain, 0);
+  assert.equal(v.gate_threshold, -93.1);
+  assert.equal(v.doubler_spread, 7);
+  assert.equal(v.gate_active, true);
+  const freq = r.params.find((p) => p.key === 'clean_eq_lo_freq');
+  assert.deepEqual([freq.value, freq.stateValue, freq.unverified], [null, 0.5, true]);
+  assert.match(r.note, /unverified state scale/);
+
+  // Writing 50 % stores 0.5 (not 50, which the plug-in clamps to 100 %). The edited preset is
+  // caught when Studio One is asked to re-index it, then the write is stopped there.
+  const presetsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 's1fix-'));
+  const preset = buildVstPreset({ classId: 'ABCDEF019182FAEB4E4453504E4A5058', chunks: [{ id: 'Comp', data: writeJuceXml(xml) }] });
+  let presetBytes;
+  const spyCall = async (op, args) => {
+    if (op === 'command') {
+      const dir = path.join(presetsRoot, 'Neural DSP', 'Archetype Petrucci X', 'studio-one-mcp');
+      for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) presetBytes = fs.readFileSync(path.join(dir, f));
+      throw new Error('stop here');
+    }
+    return call(op, args);
+  };
+  const writeParams = (c, a) => writePluginParams(c, a, {
+    readState: async () => ({ channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', classId: 'ABCDEF019182FAEB4E4453504E4A5058', xml, raw: preset, source: 'song-save' }),
+    closeWindows: async () => [],
+    presetsRoot,
+    timeoutMs: 0,
+    sleep: async () => {},
+  });
+  await assert.rejects(setParams(spyCall, { channel: 'Gtr', slot: 0, changes: { 'Overdrive Drive': '50 %', input_gain: -6 } }, { catalog: cat, discover, pluginClass, writeParams }), /did not list the new preset/);
+  fs.rmSync(presetsRoot, { recursive: true, force: true });
+  const out = readJuceXml(parseVstPreset(presetBytes).chunks[0].data);
+  assert.match(out, / overdriveDrive="0\.5" /);
+  assert.match(out, / inputGain="-6" /);
+  assert.equal(out.replace('overdriveDrive="0.5"', 'overdriveDrive="0.951"').replace('inputGain="-6"', 'inputGain="0"'), xml, 'nothing else changed');
+  await assert.rejects(setParams(spyCall, { channel: 'Gtr', slot: 0, changes: { clean_eq_lo_freq: 200 } }, { catalog: cat, discover, pluginClass, writeParams }), /cannot be set: the scan could not verify/);
 });
 
 test('live_remove_plugin removes the slot by its exact FX name', async () => {

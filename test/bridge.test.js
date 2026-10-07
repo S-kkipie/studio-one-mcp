@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { bridgeStatus, call } from '../src/bridge.js';
+import { bridgeStatus, call, placeRequest } from '../src/bridge.js';
 
 function fakeDevice(dir, handle) {
   let lastId = null;
@@ -74,4 +74,16 @@ test('a doorbell failure (no MIDI port) surfaces as the error', async () => {
   await assert.rejects(call('ping', {}, { dir, nudge: () => { throw new Error('No MIDI output matching "IAC"'); } }), /No MIDI output/);
   // and the queue is not poisoned for the next call
   await assert.rejects(call('ping', {}, { dir, timeoutMs: 100, nudge: () => {} }), /did not answer/);
+});
+
+test('placeRequest retries a rename Windows refuses while Studio One holds request.json, then gives up', async () => {
+  const locked = (n) => {
+    let left = n;
+    return () => { if (left-- > 0) throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }); };
+  };
+  const sleeps = [];
+  await placeRequest('a.tmp', 'request.json', { rename: locked(3), sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 3);
+  await assert.rejects(placeRequest('a.tmp', 'request.json', { rename: locked(Infinity), waitMs: 0, sleep: async () => {} }), /EPERM/);
+  await assert.rejects(placeRequest('a.tmp', 'request.json', { rename: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }, sleep: async () => assert.fail('no retry') }), /ENOENT/);
 });

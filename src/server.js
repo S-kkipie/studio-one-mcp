@@ -31,7 +31,7 @@ import { gridBeats } from './grid.js';
 import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEmptyPart } from './compose.js';
 import { version } from './version.js';
 import { defaultCatalogDir } from './plugins/scan.js';
-import { loadCatalog, matchPlugin, searchCatalog } from './plugins/catalog.js';
+import { loadCatalog, matchPlugin, searchCatalog, entryBackend, stateScaleOf, CATALOG_SCHEMA } from './plugins/catalog.js';
 import { getParams, setParams, pluginPresets, addPluginWithPreset, removePlugin, runScan } from './plugins/controller.js';
 import { focusPlugin, closePluginWindows } from './plugins/windows.js';
 
@@ -112,7 +112,7 @@ server.tool(
 
 server.tool(
   'plugin_catalog',
-  'Offline plug-in catalog (from the scanner). With `plugin`: that plug-in parameters (name, key, range, isBoolean). Otherwise: search plug-ins by `query` (name/vendor substring; omit to list all) with backend state/opaque/unavailable.',
+  'Offline plug-in catalog (from the scanner). With `plugin`: that plug-in (isInstrument, backend) and its parameters (name, key, label, range in display units, isBoolean, choices for a choice list, settable: false when the scan could not verify how its saved state stores the value). Otherwise: search plug-ins by `query` (name/vendor substring; omit to list all) with isInstrument and backend state/opaque/unavailable.',
   { query: z.string().optional(), plugin: z.string().optional() },
   guard(({ query, plugin }) => {
     const catalog = loadCatalog(defaultCatalogDir());
@@ -121,9 +121,15 @@ server.tool(
       if (!e) throw new Error(`Plug-in "${plugin}" is not in the catalog (${catalog.size} entries). Use plugin_catalog { query } to search, or run the scanner.`);
       if (e.scanError) return { name: e.name, backend: 'unavailable', scanError: e.scanError };
       const c = e.capabilities ?? {};
+      const xml = entryBackend(e) === 'state' && !c.stateRoundTrip;
       return {
-        name: e.name, vendor: e.vendor, backend: c.stateRoundTrip || c.xmlState ? 'state' : 'opaque', capabilities: c,
-        params: (e.params ?? []).map((p) => ({ name: p.name, key: p.key, min: p.min, max: p.max, default: p.default, isBoolean: p.isBoolean })),
+        name: e.name, vendor: e.vendor, isInstrument: typeof e.isInstrument === 'boolean' ? e.isInstrument : null, backend: entryBackend(e), capabilities: c,
+        ...(e.schema !== CATALOG_SCHEMA ? { note: 'scanned by an older version: run live_plugin_scan' } : {}),
+        params: (e.params ?? []).map((p) => ({
+          name: p.name, key: p.key, label: p.label || undefined, min: p.min, max: p.max, default: p.default, isBoolean: p.isBoolean,
+          ...(p.type === 'choice' && p.choices ? { choices: p.choices } : {}),
+          ...(xml ? { settable: !!(e.stateKeys ?? {})[p.key] && !!stateScaleOf(e, p.key) } : {}),
+        })),
       };
     }
     return { count: catalog.size, results: searchCatalog(catalog, query) };
@@ -496,7 +502,7 @@ server.tool(
 
 server.tool(
   'live_add_instrument_track',
-  'Add an instrument track in the running Studio One with a new instance of an instrument (by name, from live_plugins with kind "instrument", e.g. "Mai Tai", "Presence"), optionally named. Returns mixerChannel: the mixer channel of the instrument, the name live_inserts, live_add_plugin and live_plugin_params take (not the track name). One live_undo removes the track and the instrument.',
+  'Add an instrument track in the running Studio One with a new instance of an instrument (by name, from live_plugins with kind "instrument", e.g. "Mai Tai", "Presence"), optionally named. Returns mixerChannel: the mixer channel of the instrument, the name live_inserts, live_add_plugin and live_plugin_params take (not the track name). mixerChannel may be null when the new channel could not be told apart: then find it with live_inserts. One live_undo removes the track and the instrument.',
   { instrument: z.string(), name: z.string().optional().describe('Track name (default: the instrument name)') },
   guard((a) => addInstrumentTrack(call, a)),
 );
@@ -573,11 +579,11 @@ server.tool(
   guard((a) => call('setSend', a)),
 );
 
-const PLUGIN_NOTE = 'Third-party plug-ins (state backend) are not realtime: a read saves the song (File/Save) and reads the slot from it; a change saves the song too and replaces the plug-in with a new instance carrying the new settings (same slot and bypass), which takes a few seconds and drops edits made meanwhile in its window. Plug-ins that hide their parameters from hosts (backend opaque) only support presets (live_plugin_presets). After installing plug-ins run live_plugin_scan (it needs `npm run scan:setup` once).';
+const PLUGIN_NOTE = 'Third-party plug-ins (state backend) are not realtime: a read saves the song (File/Save) and reads the slot from it; a change saves the song too and replaces the plug-in with a new instance carrying the new settings (same slot and bypass), which takes a few seconds and drops edits made meanwhile in its window. Their values are in the units live_plugin_params shows (e.g. 0..100 %), converted to and from the saved state by the scan; a parameter whose conversion the scan could not verify shows value null with unverified: true and cannot be set. Do NOT use live_undo to revert a third-party parameter change or preset load: it brings the old instance back next to the new one. Set the previous values or load the previous preset instead. Plug-ins that hide their parameters from hosts (backend opaque) only support presets (live_plugin_presets). After installing plug-ins run live_plugin_scan (it needs `npm run scan:setup` once).';
 
 server.tool(
   'live_plugin_params',
-  `Parameters of one plug-in on a channel in the running Studio One (slot from live_inserts), with backend (native, state or opaque) and realtime. Native (PreSonus plug-ins): name, value, display text (e.g. "2.0:1", "-12.0 dB"), range and normalised value, live; names come from their presets and Studio One's remote-control map. State (scanned third-party plug-ins): name, key, value in the plug-in's own units, label, range. ${PLUGIN_NOTE} To read names Studio One answers to directly, pass them in \`params\`.`,
+  `Parameters of one plug-in on a channel in the running Studio One (slot from live_inserts), with backend (native, state or opaque) and realtime. Native (PreSonus plug-ins): name, value, display text (e.g. "2.0:1", "-12.0 dB"), range and normalised value, live; names come from their presets and Studio One's remote-control map. State (scanned third-party plug-ins): name, key, value in the parameter's display units, label, range (choices for a choice list, whose value is its index). ${PLUGIN_NOTE} To read names Studio One answers to directly, pass them in \`params\`.`,
   {
     channel: z.string(),
     slot: z.number().int(),
@@ -591,7 +597,7 @@ const PARAM_VALUE = z.union([z.string(), z.number(), z.boolean(), z.object({ nor
 
 server.tool(
   'live_set_plugin_param',
-  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in its own units, e.g. "6 dB" or "off"; a choice such as an amp type is a number, as live_plugin_params shows it), normalized (0..1) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized }; for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
+  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in the units live_plugin_params shows, e.g. "6 dB", "50 %" or "off"; a choice such as an amp type is its index, as live_plugin_params shows it), normalized (0..1; PreSonus plug-ins only) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized } (PreSonus only); for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
   {
     channel: z.string(),
     slot: z.number().int(),
@@ -616,7 +622,7 @@ server.tool(
 
 server.tool(
   'live_plugin_presets',
-  "Presets Studio One has indexed for a plug-in (any plug-in: PreSonus, third-party, and opaque ones too): list them for a slot (channel + slot) or by plug-in name, or load one onto a slot. Load replaces the slot's plug-in with a new instance made from the preset at the same position (bypass kept; the old instance is removed only after the new one is in), which takes a moment and is not realtime; to go back, load another preset. To add a new plug-in with a preset, use live_add_plugin with preset.",
+  "Presets Studio One has indexed for a plug-in. list: any plug-in (PreSonus, third-party, and opaque ones too), for a slot (channel + slot) or by plug-in name; load: insert effects only, onto a slot. Load replaces the slot's plug-in with a new instance made from the preset at the same position (bypass kept; the old instance is removed only after the new one is in), which takes a moment and is not realtime. Do NOT use live_undo to revert a third-party parameter change or preset load: it brings the old instance back next to the new one. Set the previous values or load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
   {
     action: z.enum(['list', 'load']),
     channel: z.string().optional(),

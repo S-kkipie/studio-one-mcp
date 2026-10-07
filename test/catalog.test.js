@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadCatalog, matchPlugin, findParam, searchCatalog } from '../src/plugins/catalog.js';
+import { loadCatalog, matchPlugin, findParam, searchCatalog, stateScaleOf, displayToState, stateToDisplay } from '../src/plugins/catalog.js';
 
 const P = (key, name) => ({ key, name, label: '', min: 0, max: 1, default: 0, isBoolean: false, isDiscrete: false });
 const entry = (name, extra = {}) => ({ name, vendor: 'V', params: [], capabilities: {}, ...extra });
@@ -38,17 +38,33 @@ test('findParam: key, exact, case-insensitive, unique substring, ambiguous', () 
 
 test('searchCatalog labels backends and handles scan errors', () => {
   const c = cat(
-    entry('Archetype A', { params: [P('a', 'a')], capabilities: { stateRoundTrip: true } }),
-    entry('Archetype B', { capabilities: { xmlState: true } }),
+    entry('Archetype A', { params: [P('a', 'a')], capabilities: { stateRoundTrip: true }, isInstrument: false }),
+    entry('Archetype B', { capabilities: { xmlState: true }, stateKeys: { a: 'a' } }),
     entry('Archetype C'),
+    entry('Archetype D', { capabilities: { xmlState: true, hostParams: true }, stateKeys: {}, isInstrument: true }),
     { name: 'Archetype Broken', path: 'x', scanError: 'boom' },
     entry('Other'),
   );
   const r = searchCatalog(c, 'archetype');
-  assert.deepEqual(r.map((x) => [x.name, x.backend]), [['Archetype A', 'state'], ['Archetype B', 'state'], ['Archetype Broken', 'unavailable'], ['Archetype C', 'opaque']]);
+  // An XML state with nothing mapped is opaque.
+  assert.deepEqual(r.map((x) => [x.name, x.backend]), [['Archetype A', 'state'], ['Archetype B', 'state'], ['Archetype Broken', 'unavailable'], ['Archetype C', 'opaque'], ['Archetype D', 'opaque']]);
+  assert.deepEqual(r.map((x) => x.isInstrument), [false, null, undefined, null, true]);
   assert.equal(r[0].paramCount, 1);
   assert.equal(r[2].scanError, 'boom');
-  assert.equal(searchCatalog(c, '').length, 5);
+  assert.equal(searchCatalog(c, '').length, 6);
+});
+
+test('stateScaleOf: a factor or {a, b}; display <-> state without float noise', () => {
+  const e = entry('X', { stateScale: { pct: 0.01, pan: { a: 1, b: -50 }, bad: 0 } });
+  assert.deepEqual(stateScaleOf(e, 'pct'), { a: 0.01, b: 0 });
+  assert.deepEqual(stateScaleOf(e, 'pan'), { a: 1, b: -50 });
+  assert.equal(stateScaleOf(e, 'bad'), null);
+  assert.equal(stateScaleOf(e, 'none'), null);
+  assert.equal(stateScaleOf(entry('Old'), 'pct'), null);
+  assert.equal(displayToState({ a: 0.01, b: 0 }, 95.1), 0.951);
+  assert.equal(stateToDisplay({ a: 0.01, b: 0 }, 0.951), 95.1);
+  assert.equal(displayToState({ a: 1, b: -50 }, 0), -50);
+  assert.equal(stateToDisplay({ a: 1, b: -50 }, 10), 60);
 });
 
 test('matchPlugin rejects loose prefixes', () => {

@@ -51,8 +51,8 @@ export async function addBus(call, { tracks, kind = 'bus' }) {
 
 const TASK_BLOCKED = /Track\/MCP Track Edit is not available right now/;
 
-async function trackTaskOnce(call, op) {
-  const { results } = await call('trackTask', { ops: [op] });
+async function trackTaskOnce(call, op, timeoutMs) {
+  const { results } = await (timeoutMs ? call('trackTask', { ops: [op] }, { timeoutMs }) : call('trackTask', { ops: [op] }));
   const r = results[0] || {};
   if (r.error) throw new Error(r.error);
   return r;
@@ -60,10 +60,11 @@ async function trackTaskOnce(call, op) {
 
 // One operation through the MCP Track Edit task; its error, if any, becomes ours. Studio One
 // disables Track Edit tasks while a plug-in window is open or focused: then the plug-in windows are
-// closed once and the operation is tried again.
-export async function trackTask(call, op, { closeWindows = closePluginWindows } = {}) {
+// closed once and the operation is tried again. `timeoutMs` overrides the bridge's 5 s answer time
+// (inserting or removing a plug-in instance can take longer).
+export async function trackTask(call, op, { closeWindows = closePluginWindows, timeoutMs } = {}) {
   try {
-    return await trackTaskOnce(call, op);
+    return await trackTaskOnce(call, op, timeoutMs);
   } catch (e) {
     if (!TASK_BLOCKED.test(String(e.message))) throw e;
     try {
@@ -73,7 +74,7 @@ export async function trackTask(call, op, { closeWindows = closePluginWindows } 
       throw e;
     }
     try {
-      return await trackTaskOnce(call, op);
+      return await trackTaskOnce(call, op, timeoutMs);
     } catch (e2) {
       if (TASK_BLOCKED.test(String(e2.message))) e2.message += ' (a plug-in window or a dialog may still be open in Studio One: close it and try again)';
       throw e2;
@@ -153,7 +154,7 @@ export async function addInstrumentTrack(call, { instrument, name }) {
     });
     if (fresh.length === 1) mixerChannel = fresh[0];
   }
-  return { track: r.track, instrument: r.instrument, channel: r.channel, mixerChannel, connected: r.connected, note: 'mixerChannel is the instrument\'s channel for live_inserts, live_add_plugin and live_plugin_params. One live_undo removes the track and the instrument.' };
+  return { track: r.track, instrument: r.instrument, channel: r.channel, mixerChannel, connected: r.connected, note: 'mixerChannel is the instrument\'s channel for live_inserts, live_add_plugin and live_plugin_params; it may be null (the new channel could not be told apart): then find it with live_inserts. One live_undo removes the track and the instrument.' };
 }
 
 // A plug-in on a channel's inserts, through DeviceEditFunctions like Studio One's
@@ -191,12 +192,15 @@ export async function listPresets(call, cid) {
   return trackTask(call, { op: 'listPresets', cid });
 }
 
+// Creating or removing an instance loads or unloads the plug-in: allow it this long to answer.
+export const INSTANCE_TIMEOUT_MS = 30000;
+
 export async function insertPreset(call, { channel, cid, preset, position }) {
-  return trackTask(call, { op: 'insertPreset', channel, cid, preset, position });
+  return trackTask(call, { op: 'insertPreset', channel, cid, preset, position }, { timeoutMs: INSTANCE_TIMEOUT_MS });
 }
 
 // `name` (the slot insertPreset returned, e.g. "FX02") addresses a slot exactly; the FXnn names are in
 // creation order, not by position, so `slot` alone is only reliable when nothing was inserted before another.
 export async function slotCommand(call, { channel, slot, command, name }) {
-  return trackTask(call, { op: 'slotCommand', channel, slot, command, name });
+  return trackTask(call, { op: 'slotCommand', channel, slot, command, name }, command === 'Remove' ? { timeoutMs: INSTANCE_TIMEOUT_MS } : undefined);
 }

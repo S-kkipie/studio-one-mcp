@@ -13,9 +13,9 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openSongArchive } from '../song.js';
 import { kids, byXid, walk } from '../xml.js';
-import { listPresets, insertPreset, slotCommand } from '../tracks.js';
+import { listPresets, insertPreset, slotCommand, INSTANCE_TIMEOUT_MS } from '../tracks.js';
 import { parseVstPreset, buildVstPreset, readJuceXml, writeJuceXml, setXmlAttrs, getXmlAttrs } from './vstpreset.js';
-import { findParam, matchPlugin } from './catalog.js';
+import { findParam, matchPlugin, stateScaleOf, displayToState, unverifiedMessage, normalizedRefused } from './catalog.js';
 import { closePluginWindows } from './windows.js';
 import { REPO_ROOT, defaultPython } from './scan.js';
 
@@ -51,8 +51,11 @@ export function findSlotPreset(zip, channel, slot) {
   throw new Error(`no saved state for slot ${slot} of ${channel} in the song (looked for ${prefix}*.vstpreset)`);
 }
 
-async function rackOf(call, channel) {
-  const rack = await call('inserts', { channel });
+// After a create or remove that may still be running, the next answer can take as long.
+const SLOW = { timeoutMs: INSTANCE_TIMEOUT_MS };
+
+async function rackOf(call, channel, opts) {
+  const rack = await (opts ? call('inserts', { channel }, opts) : call('inserts', { channel }));
   return (Array.isArray(rack) && rack[0] ? rack[0].inserts : []) || [];
 }
 
@@ -89,22 +92,26 @@ export async function readPluginState(call, { channel, slot }, { openArchive = o
   };
 }
 
-// A change's value as the state stores it. { normalized } maps through the catalog range.
-function stateValue(v, param) {
-  if (v && typeof v === 'object' && 'normalized' in v) {
-    const n = Number(v.normalized);
-    if (!param || typeof param.min !== 'number' || typeof param.max !== 'number' || !(n >= 0 && n <= 1)) return undefined;
-    return Math.round((param.min + n * (param.max - param.min)) * 1e6) / 1e6;
-  }
-  if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') return v;
-  return undefined;
+// A change's value (in the parameter's display units, as the catalog shows it) as the state stores
+// it: state = a * display + b, from the scan (stateScale). A key the scan could not verify is
+// refused, and so is { normalized }: the state is not a linear 0..1 of the range (log tapers).
+function stateValue(v, r, entry) {
+  const name = r.param?.name ?? r.key;
+  if (v && typeof v === 'object') throw new Error(normalizedRefused(name));
+  const scale = stateScaleOf(entry, r.key);
+  if (!scale) throw new Error(unverifiedMessage(entry, name));
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return displayToState(scale, v);
+  throw new Error(`${name}: give a number or on/off for ${entry.name}'s saved state, not "${v}"`);
 }
 
-// Booleans as the state already spells them: "true"/"false" where the attribute holds one of those
-// (Neural), else 1/0 (JUCE APVTS <PARAM id=".." value=".."/> parses "true" as 0).
+// On/off as the state already spells it: "true"/"false" where the attribute holds one of those
+// (Neural; also two-choice parameters such as a mode), else 1/0 (JUCE APVTS <PARAM id=".." value=".."/>
+// parses "true" as 0).
 function boolText(xml, stateKey, v) {
   const cur = getXmlAttrs(xml, [stateKey])[stateKey];
-  return cur === 'true' || cur === 'false' ? String(v) : v ? 1 : 0;
+  if (cur === 'true' || cur === 'false') return typeof v === 'boolean' || v === 0 || v === 1 ? String(v === true || v === 1) : v;
+  return typeof v === 'boolean' ? (v ? 1 : 0) : v;
 }
 
 // change key (catalog key or parameter name) -> { param, key, stateKey }
@@ -137,10 +144,9 @@ async function editState(state, entry, changes, runPython) {
     const byAttr = {};
     for (const [k, v] of Object.entries(changes)) {
       const r = resolve(entry, k);
-      const val = stateValue(v, r.param);
-      if (!r.stateKey || val === undefined) { missing.push(k); continue; }
-      attrs[r.stateKey] = typeof val === 'boolean' ? boolText(state.xml, r.stateKey, val) : val;
-      byAttr[r.stateKey] = [k, val];
+      if (!r.stateKey) { missing.push(k); continue; }
+      attrs[r.stateKey] = boolText(state.xml, r.stateKey, stateValue(v, r, entry));
+      byAttr[r.stateKey] = [k, v];
     }
     const out = setXmlAttrs(state.xml, attrs);
     for (const a of Object.keys(attrs)) {
@@ -155,6 +161,7 @@ async function editState(state, entry, changes, runPython) {
     const back = {};
     for (const [k, v] of Object.entries(changes)) {
       const r = resolve(entry, k);
+      if (v && typeof v === 'object') throw new Error(normalizedRefused(r.param?.name ?? r.key));
       keyed[r.key] = v;
       back[r.key] = k;
     }
@@ -180,19 +187,33 @@ async function editState(state, entry, changes, runPython) {
 // The old instance could not be removed: take the new one out again so two copies never stay in
 // series; if that fails too, bypass the new one. Always throws.
 async function rollBack(call, { channel, slot, count, newName, oldName, why }) {
-  let undone = false;
   let undoError = null;
   try {
     const r = await slotCommand(call, { channel, slot, command: 'Remove', name: newName });
-    undone = r.done === true && (await rackOf(call, channel)).length === count;
-    if (!undone) undoError = r.done === true ? 'the rack did not shrink' : 'Studio One did not remove it';
+    if (r.done !== true) undoError = 'Studio One did not remove it';
   } catch (e) { undoError = e.message; }
+  // An answer that timed out may still have removed it: the rack decides.
+  const n = (await rackOf(call, channel, SLOW).catch(() => null))?.length;
   const head = `the change was not applied: removing the old instance (${oldName}) failed (${why})`;
-  if (undone) throw new Error(`${head}; the new instance was removed again and the original is unchanged in slot ${slot}`);
+  if (n === count) throw new Error(`${head}; the new instance was removed again and the original is unchanged in slot ${slot}`);
+  if (!undoError) undoError = n === undefined ? 'the rack could not be read afterwards' : 'the rack did not shrink';
+  // Bypass only what is known to be the new instance.
   let bypassed = false;
-  try { bypassed = !!(await call('setInsertBypass', { channel, slot, bypassed: true })).after; } catch { /* reported below */ }
-  throw new Error(`${head}, and removing the new instance (${newName}) failed too (${undoError}); ` +
-    (bypassed ? `the new instance in slot ${slot} was bypassed, so only the original (now slot ${slot + 1}) is heard` : `the new instance in slot ${slot} could NOT be bypassed either: two instances are in series, remove one by hand`));
+  const held = await slotFx(call, channel, slot);
+  if (held === newName) {
+    try { bypassed = !!(await call('setInsertBypass', { channel, slot, bypassed: true })).after; } catch { /* reported below */ }
+  }
+  const tail = bypassed
+    ? `the new instance in slot ${slot} was bypassed, so only the original (now slot ${slot + 1}) is heard`
+    : held && held !== newName
+      ? `slot ${slot} holds ${held}, not the new instance ${newName}, so nothing was bypassed: check live_inserts, two instances may be in series`
+      : `the new instance in slot ${slot} could NOT be bypassed either: two instances are in series, remove one by hand`;
+  throw new Error(`${head}, and removing the new instance (${newName}) failed too (${undoError}); ${tail}`);
+}
+
+// The FX name of the slot, or null.
+async function slotFx(call, channel, slot) {
+  return (await call('insertSlotName', { channel, slot }, SLOW).catch(() => null))?.name ?? null;
 }
 
 /**
@@ -207,24 +228,43 @@ export async function replaceSlot(call, { channel, slot, cid, preset }, { closeW
   const old = await slotInfo(call, channel, slot);
   const count = (await rackOf(call, channel)).length;
   const oldName = (await call('insertSlotName', { channel, slot })).name;
-  const ins = await insertPreset(call, { channel, cid, preset, position: slot });
+  let newName;
+  try {
+    newName = (await insertPreset(call, { channel, cid, preset, position: slot })).slot;
+  } catch (e) {
+    // No answer in time does not mean nothing happened: a new instance in the slot, with the old
+    // one right below it, is a success.
+    const n = (await rackOf(call, channel, SLOW).catch(() => null))?.length;
+    if (n !== count + 1) throw e;
+    const at = await slotFx(call, channel, slot);
+    if (!at || at === oldName || (await slotFx(call, channel, slot + 1)) !== oldName) {
+      e.message += `; ${channel} now has ${n} plug-ins (it had ${count}): check live_inserts, a new instance may be in the rack`;
+      throw e;
+    }
+    newName = at;
+  }
 
-  // Remove the old instance (now one further down); a remove that did not happen is a failure.
+  // Remove the old instance (now one further down). The rack decides whether it happened: a remove
+  // that reported done but left the rack long is a failure, one that timed out but shrank it is not.
   let removeError = null;
   try {
     const r = await slotCommand(call, { channel, slot: slot + 1, command: 'Remove', name: oldName });
     if (r.done !== true) removeError = 'Studio One did not remove it';
   } catch (e) { removeError = e.message; }
-  if (!removeError) {
-    const n = (await rackOf(call, channel)).length;
-    if (n !== count) removeError = `the rack has ${n} plug-ins afterwards, expected ${count}`;
-  }
-  if (removeError) await rollBack(call, { channel, slot, count, newName: ins.slot, oldName, why: removeError });
+  const n = (await rackOf(call, channel, removeError ? SLOW : undefined).catch(() => null))?.length;
+  if (n === count) removeError = null;
+  else if (!removeError) removeError = n === undefined ? 'the rack could not be read afterwards' : `the rack has ${n} plug-ins afterwards, expected ${count}`;
+  if (removeError) await rollBack(call, { channel, slot, count, newName, oldName, why: removeError });
 
-  const res = { slotName: ins.slot, plugin: old.name, bypassed: !!old.bypassed };
-  const now2 = await call('insertSlotName', { channel, slot }).catch(() => null);
-  if (now2 && ins.slot && now2.name !== ins.slot) res.warning = `slot ${slot} now holds ${now2.name}, not the new instance ${ins.slot}`;
-  if (old.bypassed) await call('setInsertBypass', { channel, slot, bypassed: true });
+  const res = { slotName: newName, plugin: old.name, bypassed: !!old.bypassed };
+  const now2 = await slotFx(call, channel, slot);
+  if (newName && now2 !== newName) {
+    // Do not bypass what may not be the new instance.
+    res.warning = now2 ? `slot ${slot} now holds ${now2}, not the new instance ${newName}` : `slot ${slot} could not be checked afterwards`;
+    if (old.bypassed) res.warning += '; the bypass was not restored (check live_inserts, then use live_bypass_insert)';
+  } else if (old.bypassed) {
+    await call('setInsertBypass', { channel, slot, bypassed: true });
+  }
   return res;
 }
 
@@ -279,7 +319,9 @@ export async function writePluginParams(call, { channel, slot, changes, entry },
     channel, slot, plugin: state.plugin, applied: edit.applied, missing: edit.missing, backend: 'state', realtime: false, source: state.source,
     note: 'The plug-in is replaced by a new instance with the edited state; changes made in its window during the few seconds of the write are lost.',
   };
-  if (!Object.keys(edit.applied).length) return base;
+  if (!Object.keys(edit.applied).length) {
+    return { ...base, note: `Nothing was applied: none of the changes is in ${entry.name}'s saved state (see missing); the plug-in was not touched.` };
+  }
 
   const cid = state.cid || braceClassId(state.classId);
   const name = uuid();

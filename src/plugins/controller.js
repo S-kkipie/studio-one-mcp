@@ -2,22 +2,36 @@
 // presets through it.
 //  - native: PreSonus plug-ins. Studio One's findParameter answers their internal names (found in
 //    their presets and the remote-control map); realtime.
-//  - state: third-party plug-ins whose saved state the scanner could map (catalog xmlState or
-//    stateRoundTrip). Reads save the song and read the slot's state from it; writes replace the
-//    slot with a new instance made from the edited state (a few seconds, not realtime).
+//  - state: third-party plug-ins whose saved state the scanner could map (catalog stateRoundTrip, or
+//    xmlState with mapped attributes). Reads save the song and read the slot's state from it; writes
+//    replace the slot with a new instance made from the edited state (a few seconds, not realtime).
+//    Values are in the parameter's display units; the scan's stateScale converts them to and from
+//    the state (Archetype keeps 0..1 for a 0..100 %), and keys it could not verify are read-only.
 //  - opaque: everything else (no host parameters, no editable state, scan errors, not scanned):
 //    presets, bypass and the window only.
 import fs from 'node:fs';
-import { loadCatalog, matchPlugin, findParam, searchCatalog } from './catalog.js';
+import {
+  loadCatalog, matchPlugin, findParam, searchCatalog, entryBackend, stateScaleOf, stateToDisplay, unverifiedMessage, normalizedRefused, CATALOG_SCHEMA,
+} from './catalog.js';
 import { defaultCatalogDir, defaultPython, scanAll } from './scan.js';
 import { readPluginState, writePluginParams, replaceSlot } from './state.js';
 import { getXmlAttrs } from './vstpreset.js';
 import { closePluginWindows } from './windows.js';
 import { classIdFor, findPluginClass } from './classes.js';
 import { pluginParamNames } from '../plugins.js';
-import { listPresets, insertPreset, addPlugin, slotCommand } from '../tracks.js';
+import { listPresets, insertPreset, addPlugin, slotCommand, INSTANCE_TIMEOUT_MS } from '../tracks.js';
 
 const SCAN_HINT = 'run live_plugin_scan (it needs `npm run scan:setup` once)';
+
+// One session-changing plug-in operation at a time (state writes and the song saves of state reads,
+// preset loads, removes, adds, scans): two of them interleaved could save, insert and remove over
+// each other's instances.
+let sessionQueue = Promise.resolve();
+export function serialized(fn) {
+  const run = sessionQueue.then(fn, fn);
+  sessionQueue = run.catch(() => {});
+  return run;
+}
 
 // -> { backend: 'native' | 'state' | 'opaque', entry, names, reason }. PreSonus names are tried
 // first, so a catalog entry can never capture a PreSonus plug-in. `pluginClass(name)` is Studio One's
@@ -28,9 +42,9 @@ export function pickBackend(insertName, catalog, { discover = pluginParamNames, 
   const entry = catalog ? matchPlugin(catalog, insertName) : null;
   if (entry) {
     if (entry.scanError) return { backend: 'opaque', entry, reason: 'scanError' };
-    const c = entry.capabilities || {};
-    if (c.stateRoundTrip || c.xmlState) return { backend: 'state', entry };
-    return { backend: 'opaque', entry, reason: c.hostParams ? 'noState' : 'noHostParams' };
+    if (entryBackend(entry) === 'state') return { backend: 'state', entry };
+    // An XML state with no attribute mapped to a parameter is as opaque as no state at all.
+    return { backend: 'opaque', entry, reason: (entry.capabilities || {}).hostParams ? 'noState' : 'noHostParams' };
   }
   // Not found in Studio One's list either (or no list): it may still be a VST3, so suggest the scan.
   const cls = pluginClass(insertName);
@@ -105,16 +119,32 @@ export async function getParams(call, { channel, slot, filter, params }, deps) {
   const entry = b.entry;
   const keys = entry.stateKeys || {};
   const wanted = (entry.params || []).filter((p) => matches(filter, p.name, p.key));
-  const st = await d.readState(call, { channel, slot });
+  // The read saves the song: it waits for any other session-changing plug-in operation.
+  const st = await serialized(() => d.readState(call, { channel, slot }));
   const out = { ...head, realtime: false, source: st.source, saved: st.saved, params: [] };
+  const desc = (p) => ({ name: p.name, key: p.key, label: p.label || undefined, min: p.min, max: p.max, ...(p.choices && p.type === 'choice' ? { choices: p.choices } : {}) });
   if (!st.xml) {
-    return { ...out, params: wanted.map((p) => ({ name: p.name, key: p.key, value: null, label: p.label || undefined, min: p.min, max: p.max })), note: `${plug.name} keeps a binary state: values cannot be read, but they can be set` };
+    return { ...out, params: wanted.map((p) => ({ ...desc(p), value: null })), note: `${plug.name} keeps a binary state: values cannot be read, but they can be set` };
   }
   const mapped = wanted.filter((p) => keys[p.key]);
   const vals = getXmlAttrs(st.xml, mapped.map((p) => keys[p.key]));
-  out.params = mapped.map((p) => ({ name: p.name, key: p.key, value: fromState(vals[keys[p.key]]), label: p.label || undefined, min: p.min, max: p.max }));
+  const unverified = [];
+  out.params = mapped.map((p) => {
+    let raw = fromState(vals[keys[p.key]]);
+    if (p.type === 'choice' && typeof raw === 'boolean') raw = raw ? 1 : 0;
+    const scale = stateScaleOf(entry, p.key);
+    if (!scale) {
+      unverified.push(p.name);
+      return { ...desc(p), value: null, stateValue: raw, unverified: true };
+    }
+    return { ...desc(p), value: typeof raw === 'number' ? stateToDisplay(scale, raw) : raw };
+  });
   const unmapped = wanted.filter((p) => !keys[p.key]).map((p) => p.name);
   if (unmapped.length) out.unmapped = unmapped;
+  if (unverified.length) {
+    out.note = `${unverified.length} parameter(s) have an unverified state scale (value null; stateValue is the raw saved-state value, not in the parameter's units) and cannot be set` +
+      (entry.schema !== CATALOG_SCHEMA ? ': the catalog entry is from an older scan, run live_plugin_scan' : '');
+  }
   return out;
 }
 
@@ -147,10 +177,12 @@ function notNumber(text, param, key, bool) {
  *  - XML state: text is on/off/true/false, or a number, optionally with the parameter's unit
  *    ("6 dB"; "2 kHz" -> 2000 for a Hz parameter); numbers must lie within the catalog min..max.
  *    Other text is refused: the plug-in would read it as an arbitrary number.
- * Numbers 0/1 on a boolean parameter become booleans; { normalized } passes through.
+ * Numbers 0/1 on a boolean parameter become booleans. A choice (catalog choices) is its index,
+ * 0..choices-1. { normalized } is refused: the state is not a linear 0..1 of the range.
  */
 export function stateChange(v, param, { binary = false, key } = {}) {
   const bool = param && (param.isBoolean || (param.min === false && param.max === true));
+  if (v && typeof v === 'object') throw new Error(normalizedRefused(param?.name ?? key));
   if (typeof v === 'string') {
     if (binary) return v;
     const t = v.trim();
@@ -161,6 +193,9 @@ export function stateChange(v, param, { binary = false, key } = {}) {
     v = m[2] ? inUnit(Number(m[1]), m[2], param, key, t) : Number(m[1]);
   }
   if (bool && typeof v === 'number' && (v === 0 || v === 1)) return v === 1;
+  if (!binary && typeof v === 'number' && param?.type === 'choice' && param.choices > 0 && !(Number.isInteger(v) && v >= 0 && v < param.choices)) {
+    throw new Error(`${param.name ?? key} is a choice of ${param.choices} (0..${param.choices - 1}, as live_plugin_params shows it); got ${v}`);
+  }
   if (!binary && typeof v === 'number' && param && typeof param.min === 'number' && typeof param.max === 'number' && (v < param.min || v > param.max)) {
     throw new Error(`${param.name ?? key} must be within ${param.min}..${param.max}${param.label ? ` ${param.label}` : ''}; got ${v}`);
   }
@@ -182,7 +217,11 @@ function nativeArg(param, v) {
  * native, one change -> the bridge's { param, before, after } plus backend/realtime;
  * native, several -> { ..., results: [{ param, before, after }] }; state -> writePluginParams' result.
  */
-export async function setParams(call, { channel, slot, changes }, deps) {
+export async function setParams(call, args, deps) {
+  return serialized(() => setParamsNow(call, args, deps));
+}
+
+async function setParamsNow(call, { channel, slot, changes }, deps) {
   const d = defaults(deps);
   const list = Object.entries(changes || {});
   if (!list.length) throw new Error('no changes given');
@@ -196,9 +235,13 @@ export async function setParams(call, { channel, slot, changes }, deps) {
     return { channel, slot, plugin: plug.name, backend: 'native', realtime: true, results: results.map(({ param, before, after }) => ({ param, before, after })) };
   }
   const conv = {};
+  const binary = !(b.entry.capabilities || {}).xmlState;
   for (const [k, v] of list) {
     const param = (b.entry.params || []).find((p) => p.key === k) || findParam(b.entry, k);
-    conv[k] = stateChange(v, param, { binary: !(b.entry.capabilities || {}).xmlState, key: k });
+    if (!param) throw new Error(`no parameter ${k} on ${plug.name} (live_plugin_params lists them)`);
+    conv[k] = stateChange(v, param, { binary, key: k });
+    // A mapped attribute whose scale the scan could not verify would be written on the wrong scale.
+    if (!binary && (b.entry.stateKeys || {})[param.key] && !stateScaleOf(b.entry, param.key)) throw new Error(unverifiedMessage(b.entry, param.name));
   }
   return d.writeParams(call, { channel, slot, changes: conv, entry: b.entry });
 }
@@ -215,7 +258,11 @@ function classOf(name, d) {
  * onto a slot: a new instance with the preset replaces the slot (same position, bypass kept), and
  * the old instance is removed only after the new one is in.
  */
-export async function pluginPresets(call, { channel, slot, plugin, action = 'list', preset }, deps = {}) {
+export async function pluginPresets(call, args, deps = {}) {
+  return args?.action === 'load' ? serialized(() => pluginPresetsNow(call, args, deps)) : pluginPresetsNow(call, args, deps);
+}
+
+async function pluginPresetsNow(call, { channel, slot, plugin, action = 'list', preset }, deps = {}) {
   const d = { replace: replaceSlot, ...deps };
   const hasSlot = channel !== undefined && slot !== undefined;
   if (action === 'load') {
@@ -237,32 +284,59 @@ export async function pluginPresets(call, { channel, slot, plugin, action = 'lis
   };
 }
 
+const SLOW = { timeoutMs: INSTANCE_TIMEOUT_MS };
+
 // A plug-in on a channel's inserts, optionally from one of its presets.
-export async function addPluginWithPreset(call, { channel, plugin, preset }, deps = {}) {
+export async function addPluginWithPreset(call, args, deps = {}) {
+  return serialized(() => addPluginWithPresetNow(call, args, deps));
+}
+
+async function addPluginWithPresetNow(call, { channel, plugin, preset }, deps = {}) {
   if (!preset) return addPlugin(call, { channel, plugin });
   const cid = classOf(plugin, deps);
   const presets = (await listPresets(call, cid)).presets || [];
   if (!presets.some((p) => p.name === preset)) throw new Error(`${plugin} has no preset named "${preset}" (live_plugin_presets lists them)`);
-  const r = await insertPreset(call, { channel, cid, preset });
+  const before = ((await call('inserts', { channel }))[0]?.inserts || []).length;
+  let slotName;
+  try {
+    slotName = (await insertPreset(call, { channel, cid, preset })).slot;
+  } catch (e) {
+    // No answer in time: if the rack grew by one, the insert happened (at the end).
+    const [rack] = await call('inserts', { channel }, SLOW).catch(() => [null]);
+    if (!rack || rack.inserts.length !== before + 1) throw e;
+    slotName = (await call('insertSlotName', { channel, slot: before }, SLOW).catch(() => null))?.name ?? null;
+  }
   const [rack] = await call('inserts', { channel });
-  return { channel, added: plugin, preset, slotName: r.slot, inserts: rack ? rack.inserts : null, note: 'One live_undo removes it.' };
+  return { channel, added: plugin, preset, slotName, inserts: rack ? rack.inserts : null, note: 'One live_undo removes it.' };
 }
 
 // Removes the plug-in in `slot` of `channel` (by its exact FX name, so the right one goes).
-export async function removePlugin(call, { channel, slot }, { closeWindows = closePluginWindows } = {}) {
+export async function removePlugin(call, args, deps) {
+  return serialized(() => removePluginNow(call, args, deps));
+}
+
+async function removePluginNow(call, { channel, slot }, { closeWindows = closePluginWindows } = {}) {
   const plug = await insertAt(call, channel, slot);
   await closeWindows({ channel });
   const before = (await call('inserts', { channel }))[0].inserts.length;
   const { name } = await call('insertSlotName', { channel, slot });
-  const r = await slotCommand(call, { channel, slot, command: 'Remove', name });
-  const [rack] = await call('inserts', { channel });
-  const after = rack ? rack.inserts : [];
-  if (r.done !== true || after.length !== before - 1) throw new Error(`Studio One did not remove ${plug.name} from slot ${slot} of ${channel}`);
-  return { channel, removed: plug.name, slot, inserts: after, note: 'One live_undo brings it back with its settings.' };
+  let r = null;
+  let error = null;
+  try { r = await slotCommand(call, { channel, slot, command: 'Remove', name }); } catch (e) { error = e; }
+  // The rack decides: a remove whose answer timed out may still have happened.
+  const [rack] = await (error ? call('inserts', { channel }, SLOW).catch(() => [null]) : call('inserts', { channel }));
+  const after = rack ? rack.inserts : null;
+  if (after && after.length === before - 1) return { channel, removed: plug.name, slot, inserts: after, note: 'One live_undo brings it back with its settings.' };
+  if (error) throw error;
+  throw new Error(`Studio One did not remove ${plug.name} from slot ${slot} of ${channel}` + (r && r.done === true ? ' (the rack did not shrink)' : ''));
 }
 
 // (Re)scans the installed VST3 plug-ins into the catalog (only new or changed files are scanned).
-export async function runScan({ scan = scanAll, catalogDir = defaultCatalogDir(), python = defaultPython(), exists = fs.existsSync } = {}) {
+export async function runScan(opts) {
+  return serialized(() => runScanNow(opts));
+}
+
+async function runScanNow({ scan = scanAll, catalogDir = defaultCatalogDir(), python = defaultPython(), exists = fs.existsSync } = {}) {
   if (!exists(python)) throw new Error('The plug-in scanner needs its Python environment: run `npm run scan:setup` once in the studio-one-mcp folder, then live_plugin_scan again.');
   const scanned = [];
   const stats = await scan({ catalogDir, python, onProgress: (e) => scanned.push(e.name) });

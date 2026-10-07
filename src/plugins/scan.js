@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { CATALOG_SCHEMA } from './catalog.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..');
@@ -18,9 +19,10 @@ export function defaultPython() {
     : path.join(VENV_DIR, 'bin', 'python');
 }
 
-export function defaultRoots() {
+export function defaultRoots(platform = process.platform, home = os.homedir()) {
   const roots = [];
-  if (process.platform === 'win32') roots.push('C:/Program Files/Common Files/VST3');
+  if (platform === 'win32') roots.push('C:/Program Files/Common Files/VST3');
+  if (platform === 'darwin') roots.push('/Library/Audio/Plug-Ins/VST3', path.join(home, 'Library', 'Audio', 'Plug-Ins', 'VST3'));
   const extra = process.env.STUDIO_ONE_MCP_VST3_PATHS;
   if (extra) roots.push(...extra.split(path.delimiter).filter(Boolean));
   return roots;
@@ -141,7 +143,8 @@ export async function scanAll({
       const size = st ? (st.isFile() ? st.size : 0) : undefined;
       let prev = null;
       try { prev = JSON.parse(fs.readFileSync(entryPath, 'utf8')); } catch { /* none */ }
-      if (st && prev && prev.path === file && prev.mtimeMs === st.mtimeMs && prev.size === size) {
+      // An entry written by an older scanner (another schema) is rescanned even if the file is unchanged.
+      if (st && prev && prev.path === file && prev.mtimeMs === st.mtimeMs && prev.size === size && prev.schema === CATALOG_SCHEMA) {
         const retry = prev.scanError && (prev.scanErrorKind === 'timeout' || retryErrors);
         if (!retry) { stats.skipped++; continue; }
       }
@@ -150,14 +153,14 @@ export async function scanAll({
       try {
         if (statError) throw statError;
         const result = await runner({ path: file, python, timeoutMs });
-        entry = { ...result, path: file, mtimeMs: st.mtimeMs, size, scannedAt };
+        entry = { ...result, schema: result.schema ?? CATALOG_SCHEMA, path: file, mtimeMs: st.mtimeMs, size, scannedAt };
       } catch (e) {
         if (e?.fatal) {
           throw new Error(`Cannot run the Python scanner (${e.message}). Run "npm run scan:setup" first.`);
         }
         stats.errors++;
         entry = {
-          name: base, path: file, mtimeMs: st?.mtimeMs, size,
+          schema: CATALOG_SCHEMA, name: base, path: file, mtimeMs: st?.mtimeMs, size,
           scanError: String(e?.message || e), scanErrorKind: errorKind(e), scannedAt,
         };
       }
