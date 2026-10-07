@@ -229,8 +229,13 @@ export function readChords(chordTrack, t) {
     .map((ev) => {
       const a = byXid(ev, 'chord');
       if (!a) return null;
+      // Times are read as quarter-note beats (timeFormat 2, the default); other formats are skipped.
+      if (ev.attrs.timeFormat !== undefined && String(ev.attrs.timeFormat) !== '2') return null;
+      const rawRoot = a.attrs.root;
+      const rootN = rawRoot === undefined || rawRoot === '' ? 0 : Number(rawRoot);
+      if (!Number.isFinite(rootN)) return null;
       const startBeat = num(ev.attrs.start);
-      const rootPc = fifthsToPitchClass(num(a.attrs.root));
+      const rootPc = fifthsToPitchClass(rootN);
       // A `name` on the event is a user label (e.g. from a rename); the chord is root + intervals.
       return {
         ...(ev.attrs.name ? { label: ev.attrs.name } : {}),
@@ -248,11 +253,13 @@ export function readChords(chordTrack, t) {
 export function readKeySignatures(songRoot) {
   for (const n of walk(songRoot)) {
     if (n.attrs['x:id'] !== 'keySignatureMap') continue;
-    return kids(n, 'Attributes').map((k) => ({
-      root: NOTE_NAMES[fifthsToPitchClass(num(k.attrs.root))],
-      scale: k.attrs.scale || '',
-      startBeat: round(num(k.attrs.start)),
-    }));
+    return kids(n, 'Attributes')
+      .filter((k) => k.attrs.root === undefined || k.attrs.root === '' || Number.isFinite(Number(k.attrs.root)))
+      .map((k) => ({
+        root: NOTE_NAMES[fifthsToPitchClass(num(k.attrs.root))],
+        scale: k.attrs.scale || '',
+        startBeat: round(num(k.attrs.start)),
+      }));
   }
   return [];
 }
@@ -452,6 +459,7 @@ export function summarizeSong(s) {
     markers: s.markers.map((m) => `${m.name} @ bar ${m.bar}`),
     sections: s.sections.map((x) => `${x.name} @ bar ${x.start.bar}`),
     chords: s.chords.slice(0, 64).map((c) => `${c.chord} @ bar ${c.bar}`),
+    ...(s.chords.length > 64 ? { chordsTotal: s.chords.length } : {}),
     keySignatures: s.keySignatures,
     tracks: s.tracks.map((tr) => ({
       name: tr.name,

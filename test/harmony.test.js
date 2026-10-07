@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listChords, setChords, extractChords, partsFromChords, clearChords } from '../src/harmony.js';
 
-function bridge({ playing = false, recording = false, removed = [], chordsAfter, removeExecuted = true, extractExecuted = true, partsExecuted = true, trackTaskError, notes, noAdded = false } = {}) {
+function bridge({ playing = false, recording = false, removed = [], chordsAfter, removeExecuted = true, extractExecuted = true, partsExecuted = true, trackTaskError, notes, noAdded = false, sigs, selected } = {}) {
   const log = [];
   let added = false;
   let notesCalls = 0;
@@ -14,7 +14,8 @@ function bridge({ playing = false, recording = false, removed = [], chordsAfter,
       case 'setTransport': return a.positionBars ? { position: { seconds: (parseInt(a.positionBars, 10) - 1) * 2 } } : {};
       case 'tracks': return added ? [{ name: 'Vox' }, { name: 'Pista 2' }] : [{ name: 'Vox' }];
       case 'addTrack': added = true; return noAdded ? {} : { added: ['Pista 2'] };
-      case 'selectEvents': case 'selectTrack': return {};
+      case 'selectTrack': return { selected: selected || [a.name] };
+      case 'selectEvents': return {};
       case 'command':
         if (a.name === 'Remove Track') return { executed: removeExecuted };
         if (a.name === 'Extract to Chord Track') return { executed: extractExecuted };
@@ -23,6 +24,7 @@ function bridge({ playing = false, recording = false, removed = [], chordsAfter,
       case 'trackTask': {
         const op0 = a.ops[0];
         if (trackTaskError) return { results: [{ error: trackTaskError }] };
+        if (op0.op === 'signatures') return { results: [{ signatures: sigs || [{ beat: (op0.at[0] / 2) * 4, numerator: 4, denominator: 4 }, { beat: (op0.at[1] / 2) * 4, numerator: 4, denominator: 4 }] }] };
         if (op0.op === 'removeChords') return { results: [{ removed }] };
         if (op0.op === 'chords') return { results: [{ chords: (chordsAfter || []).map((n, i) => ({ name: n, start: 4 + i * 2, end: 6 + i * 2 })) }] };
         return { results: [{}] };
@@ -43,7 +45,7 @@ test('setChords: happy path runs the ops in order and restores the selection', a
   const r = await setChords(b.call, { bar: 3, progression: 'G D Em C' }, deps(b.log));
   const ops = b.log.filter((o) => !['song', 'setTransport', 'tracks'].includes(o));
   assert.deepEqual(ops, [
-    'trackTask removeChords', 'addTrack', 'createPart', 'writeChords', 'selectEvents', 'command Event/Extract to Chord Track',
+    'trackTask signatures', 'trackTask removeChords', 'addTrack', 'createPart', 'writeChords', 'selectEvents', 'command Event/Extract to Chord Track',
     'selectTrack', 'command Song/Remove Track', 'selectEvents', 'selectTrack', 'trackTask chords',
   ]);
   assert.deepEqual(r.written, ['G', 'D', 'Em', 'C']);
@@ -145,4 +147,33 @@ test('setChords: replace false adds a range note', async () => {
 test('setChords: failure after removeChords mentions the removed chords', async () => {
   const b = bridge({ removed: [{ name: 'C', start: 4, end: 6 }] });
   await assert.rejects(setChords(b.call, { bar: 3, progression: 'G' }, deps(b.log, { writeFails: true })), /boom; 1 chord.s. were already removed.*live_undo/);
+});
+
+test('setChords: refuses non-4/4 before changing anything', async () => {
+  const b = bridge({ sigs: [{ beat: 8, numerator: 3, denominator: 4 }, { beat: 16, numerator: 3, denominator: 4 }] });
+  await assert.rejects(setChords(b.call, { bar: 3, progression: 'G D' }, deps(b.log)), /needs 4.4 from bar 3 .found 3.4./);
+  assert.ok(!b.log.includes('trackTask removeChords') && !b.log.includes('addTrack'));
+});
+
+test('setChords: refuses a meter change inside the range', async () => {
+  const b = bridge({ sigs: [{ beat: 8, numerator: 4, denominator: 4 }, { beat: 14, numerator: 4, denominator: 4 }] });
+  await assert.rejects(setChords(b.call, { bar: 3, progression: 'G D' }, deps(b.log)), /needs 4.4 from bar 3 to bar 5/);
+});
+
+test('setChords: skips Remove Track unless only the scratch track is selected', async () => {
+  const b = bridge({ chordsAfter: ['G'], selected: ['Vox', 'Pista 2'] });
+  const r = await setChords(b.call, { bar: 3, progression: 'G' }, deps(b.log));
+  assert.ok(!b.log.includes('command Song/Remove Track'));
+  assert.match(r.warnings.join(' '), /remove track Pista 2 by hand/);
+});
+
+test('setChords: failure appends warnings and the undo step count', async () => {
+  const b = bridge({ removeExecuted: false });
+  await assert.rejects(setChords(b.call, { bar: 3, progression: 'G' }, deps(b.log, { writeFails: true })), /boom.*could not remove the scratch track.*[0-9]+ live_undo steps revert everything/);
+});
+
+test('setChords: compares chords by root and intervals, not spelling', async () => {
+  const b = bridge({ chordsAfter: ['CΔ'] });
+  const r = await setChords(b.call, { bar: 3, progression: 'Cmaj7' }, deps(b.log));
+  assert.equal(r.mismatches, undefined);
 });

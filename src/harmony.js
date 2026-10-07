@@ -6,7 +6,7 @@
 import { trackTask } from './tracks.js';
 import { toSeconds } from './time.js';
 import { createPart as realCreatePart, writeChords as realWriteChords } from './compose.js';
-import { parseProgression } from './theory/chords.js';
+import { parseProgression, parseChord } from './theory/chords.js';
 import { noteName } from './theory/notes.js';
 
 const EPS = 0.001;
@@ -39,6 +39,13 @@ export async function clearChords(call, { from, to } = {}) {
 }
 
 const normalize = (s) => String(s).replace(/\s+/g, '').replace(/maj7|M7|Δ/g, 'maj7');
+const tryParse = (s) => { try { return parseChord(String(s).replace(/s+/g, '').replace(/M7|Δ/g, 'maj7')); } catch { return null; } };
+const sameChord = (a, b) => {
+  const x = tryParse(a);
+  const y = tryParse(b);
+  if (x && y) return x.root === y.root && x.bass === y.bass && [...x.intervals].sort().join() === [...y.intervals].sort().join();
+  return normalize(a) === normalize(b);
+};
 
 export async function setChords(call, { bar, progression, barsPerChord = 1, replace = true }, deps = {}) {
   const createPart = deps.createPart || realCreatePart;
@@ -52,6 +59,11 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
   const to = await toSeconds(call, `${bar + bars}.1.1.0`);
   const warnings = [];
   let undoSteps = 0;
+
+  const sigs = (await trackTask(call, { op: 'signatures', at: [from, to] })).signatures || [];
+  const [s0, s1] = sigs;
+  if (!s0 || s0.numerator !== 4 || s0.denominator !== 4) throw new Error(`live_set_chords needs 4/4 from bar ${bar} (found ${s0 ? `${s0.numerator}/${s0.denominator}` : 'no time signature'})`);
+  if (!s1 || Math.abs((s1.beat - s0.beat) - totalBeats) > 0.01) throw new Error(`live_set_chords needs 4/4 from bar ${bar} to bar ${bar + bars} (the time signature changes in that range)`);
 
   let removed = [];
   if (replace) {
@@ -84,10 +96,14 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
       undoSteps += 1;
     } finally {
       try {
-        await call('selectTrack', { name: scratch, exclusive: true });
-        const rr = await call('command', { category: 'Song', name: 'Remove Track' });
-        if (rr.executed) undoSteps += 1;
-        else warnings.push(`could not remove the scratch track "${scratch}": remove it by hand`);
+        const sel = await call('selectTrack', { name: scratch, exclusive: true });
+        if (!Array.isArray(sel?.selected) || sel.selected.length !== 1 || sel.selected[0] !== scratch) {
+          warnings.push(`remove track ${scratch} by hand (the selection was not just that track, so Remove Track was skipped)`);
+        } else {
+          const rr = await call('command', { category: 'Song', name: 'Remove Track' });
+          if (rr.executed) undoSteps += 1;
+          else warnings.push(`could not remove the scratch track "${scratch}": remove it by hand`);
+        }
       } catch (e) {
         warnings.push(`could not remove the scratch track "${scratch}" (${e.message}): remove it by hand`);
       }
@@ -99,13 +115,17 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
   try {
     await writeVia();
   } catch (e) {
-    if (removed.length) e.message += `; ${removed.length} chord(s) were already removed from the range (live_undo restores them)`;
+    const extra = [];
+    if (removed.length) extra.push(`${removed.length} chord(s) were already removed from the range`);
+    if (warnings.length) extra.push(warnings.join('; '));
+    if (undoSteps) extra.push(`${undoSteps} live_undo steps revert everything`);
+    if (extra.length) e.message += `; ${extra.join('; ')}`;
     throw e;
   }
   const chords = (await listChords(call, { from, to })).chords;
   const mismatches = [];
   if (chords.length !== requested.length) mismatches.push({ requested: requested.length, got: chords.length });
-  else requested.forEach((q, i) => { if (normalize(q) !== normalize(chords[i].chord)) mismatches.push({ requested: q, got: chords[i].chord }); });
+  else requested.forEach((q, i) => { if (!sameChord(q, chords[i].chord)) mismatches.push({ requested: q, got: chords[i].chord }); });
 
   return {
     written: requested,
@@ -114,8 +134,8 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
     ...(mismatches.length ? { mismatches } : {}),
     ...(warnings.length ? { warnings } : {}),
     undoSteps,
-    ...(replace ? {} : { rangeNote: 'replace was false: chords already in the range are part of the read-back, so count mismatches can come from them' }),
-    note: 'several live_undo steps; easier: live_clear_chords for the range, or call again',
+    ...(replace ? {} : { rangeNote: 'replace was false: chords already in the range may remain or be overwritten (Extract on existing chords is not guaranteed) and are part of the read-back, so count mismatches can come from them' }),
+    note: `${undoSteps} live_undo steps revert it fully, including replaced chords; live_clear_chords only removes the new ones`,
   };
 }
 

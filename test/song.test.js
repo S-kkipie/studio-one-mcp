@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readSong, summarizeSong } from '../src/song.js';
+import { readSong, summarizeSong, readChords, readKeySignatures } from '../src/song.js';
+import { parseXml } from '../src/xml.js';
 import { fixture, mediaPath } from './helpers/fixtures.js';
 
 test('tempo, time signature and metadata', () => {
@@ -101,4 +102,18 @@ test('chord track and key signatures from the saved song', () => {
 test('no chord track gives empty chords and key signatures', () => {
   const s = readSong(fixture());
   assert.deepEqual([s.chords, s.keySignatures], [[], []]);
+});
+
+test('offline chords: non-beat timeFormat and malformed roots are skipped; chordsTotal when truncated', () => {
+  const ev = (attrs, root) => `<ChordEvent ${attrs} length="4"><Attributes x:id="chord" root="${root}" intervals="FF 0 0 0 FF 0 0 FF 0 0 0 0"/></ChordEvent>`;
+  const node = parseXml(`<ChordTrack>${ev('timeFormat="0" start="1"', 0)}${ev('timeFormat="2" start="4"', 'x')}${ev('start="8"', 1)}</ChordTrack>`);
+  const chords = readChords(node, { at: () => ({ bar: 1 }) });
+  assert.deepEqual(chords.map((c) => [c.chord, c.startBeat]), [['G', 8]]);
+  const keys = readKeySignatures(parseXml('<Song><KeySignatureMap x:id="keySignatureMap"><Attributes root="zz" start="0"/><Attributes root="1" start="4"/></KeySignatureMap></Song>'));
+  assert.deepEqual(keys.map((k) => k.root), ['G']);
+  const s = readSong(fixture({ harmony: true }));
+  s.chords = Array.from({ length: 70 }, (_, i) => ({ chord: 'C', bar: i + 1 }));
+  const sum = summarizeSong(s);
+  assert.deepEqual([sum.chords.length, sum.chordsTotal], [64, 70]);
+  assert.equal(summarizeSong(readSong(fixture({ harmony: true }))).chordsTotal, undefined);
 });

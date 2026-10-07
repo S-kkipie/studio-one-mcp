@@ -555,7 +555,7 @@ server.tool('live_chords',
   { from: z.union([z.number(), z.string()]).optional(), to: z.union([z.number(), z.string()]).optional() },
   guard((a) => listChords(call, a)));
 server.tool('live_set_chords',
-  "Write a chord progression onto the chord track from a bar, e.g. \"G D Em C\" (one chord per bar) or \"Cm7 | Ab | Eb Bb\" (| separates bars). Studio One names the chords itself (it works them out from notes drawn on a temporary track that is removed again), so the result lists what the chord track now shows and any mismatch. replace (default true) first removes chord events overlapping the range. Assumes 4/4. Several undo steps: to take it back, use live_clear_chords on the range.",
+  "Write a chord progression onto the chord track from a bar, e.g. \"G D Em C\" (one chord per bar) or \"Cm7 | Ab | Eb Bb\" (| separates bars). Studio One names the chords itself (it works them out from notes drawn on a temporary track that is removed again), so the result lists what the chord track now shows and any mismatch. replace (default true) first removes chord events overlapping the range. Assumes 4/4 (refused otherwise). The result's undoSteps live_undo steps revert it fully, including replaced chords; live_clear_chords only removes the new ones. With replace:false, existing chords in the range may be left or overwritten (what Extract does with them is not guaranteed).",
   { bar: z.number().int().min(1), progression: z.string(), bars_per_chord: z.number().int().min(1).optional(), replace: z.boolean().optional() },
   guard((a) => setChords(call, { bar: a.bar, progression: a.progression, barsPerChord: a.bars_per_chord, replace: a.replace })));
 server.tool('live_extract_chords',
@@ -567,7 +567,7 @@ server.tool('live_parts_from_chords',
   { track: z.string() },
   guard((a) => partsFromChords(call, a)));
 server.tool('live_clear_chords',
-  "Remove chord track events overlapping from..to (seconds or bars), or all of them. One live_undo reverts it.",
+  "Remove chord track events overlapping from..to (seconds or bars), or all of them. One live_undo reverts it (when anything was removed).",
   { from: z.union([z.number(), z.string()]).optional(), to: z.union([z.number(), z.string()]).optional() },
   guard((a) => clearChords(call, a)));
 
