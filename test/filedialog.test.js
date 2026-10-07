@@ -122,6 +122,10 @@ test('the script: only NEW dialogs of the given process that pass the preset-fil
   assert.match(s, /\$expect -eq 'export'[^\n]*ClickTask\(\$c, 6\)/);   // overwrite confirm: Yes only when exporting
   assert.match(s, /BoxShaped\(\$c\)/);                                  // error boxes: message-box shaped...
   assert.match(s, /\$o -ne \$dlg\.ToInt64\(\) -and \$o -ne \$dlgOwner/); // ...owned by our dialog or its owner
+  // Post-close box: owned by our dialog -> OK before Cancel; owned by Studio One's main window -> Cancel before OK.
+  const post = s.slice(s.indexOf("$words = [S1McpDialog]::Words($c)\n      $button"));
+  assert.match(post, /if \(\$o -eq \$dlg\.ToInt64\(\)\) \{[^}]*Click\(\$c, 1\)\) \{ \$button = 'ok' \} elseif \(\[S1McpDialog\]::Click\(\$c, 2\)\)/);
+  assert.match(post, /\} else \{[^}]*Click\(\$c, 2\)\) \{ \$button = 'cancel' \} elseif \(\[S1McpDialog\]::Click\(\$c, 1\)\)/);
   assert.ok(!/SetForegroundWindow|SetActiveWindow|SetFocus|mouse_event|SendInput|keybd_event/.test(s), 'never foregrounds or fakes input');
   // Cancel mode never presses OK.
   const cancelBlock = s.slice(s.indexOf("if ($mode -eq 'cancel')"), s.indexOf("if ($mode -ne 'fill')"));

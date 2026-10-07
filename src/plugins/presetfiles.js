@@ -129,7 +129,7 @@ export function parsePresetRef(preset) {
  * class name, e.g. "Mai Tai"). Roots are searched in order and the first root with a match decides,
  * whatever the extension, so the user's own presets win over factory ones of the same name.
  * Within that root:
- *  - "Folder/Name" picks the file in that folder (when there is one; else the name alone decides);
+ *  - "Folder/Name" picks the file in that folder (when there is none it is refused, with the candidates);
  *  - "./Name" picks the file directly in the plug-in's folder, and nothing else;
  *  - a plain name with several files: the one directly in the plug-in's folder wins when it is the only
  *    one there; otherwise it is refused, and err.candidates lists the spellings that load each one.
@@ -153,6 +153,10 @@ export function findPresetFile({ folder, preset, cid = null, exts = null, roots 
     }
   } else {
     const inSub = ref.sub.length ? byExt(files.filter((f) => lc(f.folderRel).split('/').slice(-ref.sub.length).join('/') === ref.sub.join('/'))) : [];
+    if (ref.sub.length && !inSub.length) {
+      const candidates = spellings(files, ref.name);
+      throw Object.assign(new Error(`no preset ${ref.name} in folder ${String(preset).split(/[\\/]/).filter((x) => x && x !== '.').slice(0, -1).join('/')} (candidates: ${candidates.map((c) => `"${c}"`).join(', ')})`), { candidates });
+    }
     pool = inSub.length ? inSub : byExt(files);
     if (pool.length > 1) {
       const top = pool.filter((f) => f.folderRel === '');
@@ -166,7 +170,7 @@ export function findPresetFile({ folder, preset, cid = null, exts = null, roots 
     throw Object.assign(new Error(`preset "${preset}" matches ${pool.length} files in ${root.dir}: ${rel.join(', ')}; pass preset as Folder/Name to pick one (${candidates.map((c) => `"${c}"`).join(' or ')})`), { candidates });
   }
   if (!pool.length) return null;
-  return { file: pool[0].file, ext: pool[0].ext };
+  return { file: pool[0].file, ext: pool[0].ext, folderRel: pool[0].folderRel };
 }
 
 /**

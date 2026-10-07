@@ -261,7 +261,13 @@ try {
       if (($o -ne $dlg.ToInt64() -and $o -ne $dlgOwner) -or -not [S1McpDialog]::BoxShaped($c)) { continue }
       $words = [S1McpDialog]::Words($c)
       $button = $null
-      if ([S1McpDialog]::Click($c, 1)) { $button = 'ok' } elseif ([S1McpDialog]::Click($c, 2)) { $button = 'cancel' }
+      if ($o -eq $dlg.ToInt64()) {
+        # Owned by our file dialog: OK first, else Cancel.
+        if ([S1McpDialog]::Click($c, 1)) { $button = 'ok' } elseif ([S1McpDialog]::Click($c, 2)) { $button = 'cancel' }
+      } else {
+        # Owned by Studio One's main window: Cancel when present (the safe answer), else OK.
+        if ([S1McpDialog]::Click($c, 2)) { $button = 'cancel' } elseif ([S1McpDialog]::Click($c, 1)) { $button = 'ok' }
+      }
       Emit @{ ok = $false; found = $true; closed = $true; shown = $words; button = $button; error = "Studio One showed: $words" }; exit 0
     }
     Start-Sleep -Milliseconds 100

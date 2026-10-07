@@ -142,10 +142,13 @@ async function resolvePlugin(call, target, deps = {}) {
 
 // The class of the song's instrument N, from the song file's last save: Presets/Synths/<N> - <title>.fxpreset
 // (cid attribute) or .vstpreset (header). -> class ID or null.
-export function savedSynthClassId(zip, index) {
+export function savedSynthClassId(zip, index, titles = null) {
+  // `titles`: the instrument's current name (and the name it had in that save, if known). When given, the
+  // saved entry must carry one of them; an entry under another title is another instrument (the song moved on).
+  const want = titles === null ? null : [].concat(titles).filter((t) => t != null).map((t) => String(t).toLowerCase());
   const name = (zip?.names || []).find((n) => {
-    const m = /^Presets\/Synths\/(\d+) - .+\.(fxpreset|vstpreset)$/i.exec(n);
-    return m && Number(m[1]) === Number(index);
+    const m = /^Presets\/Synths\/(\d+) - (.+)\.(fxpreset|vstpreset)$/i.exec(n);
+    return m && Number(m[1]) === Number(index) && (want === null || want.includes(m[2].toLowerCase()));
   });
   if (!name) return null;
   const raw = zip.raw(name);
@@ -183,7 +186,7 @@ export async function instrumentClass(call, inst, deps = {}) {
   try {
     zip = typeof deps.zip === 'function' ? await deps.zip() : deps.zip !== undefined ? deps.zip : await songArchive(call, deps.openArchive);
   } catch { zip = null; }
-  const cid = savedSynthClassId(zip, inst.index);
+  const cid = savedSynthClassId(zip, inst.index, [inst.name]);
   if (!cid) return null;
   const named = (deps.classes ?? loadPluginClasses)().find((c) => String(c.cid).toLowerCase() === cid.toLowerCase())?.name
     ?? (deps.presetClassById ?? presetClassById)(cid)?.className ?? null;
@@ -451,6 +454,9 @@ async function pluginPresetsNow(call, args, deps = {}) {
     const { ext, buf } = loadablePreset(found.ext, fs.readFileSync(found.file), { instrument: p.instrument, cls: { cid, name: folder } });
     await d.io.loadState(call, p.target, buf, ext);
     const out = { ...p.head, plugin: name, preset, file: found.file, backend: 'preset', realtime: false, inPlace: true, note: PRESET_IN_PLACE_NOTE };
+    // A file in a subfolder of the plug-in's folder is a whole-plug-in preset (e.g. a Fat Channel module
+    // preset carries every module): all of it is loaded.
+    if (found.folderRel && !p.instrument) out.warning = `this file is a whole ${folder} preset: every module takes its values (live_undo does not revert in-place loads)`;
     if (!p.instrument) {
       // Same instance: the slot still holds the plug-in, at the same place.
       const [rack] = await call('inserts', { channel: p.target.channel });

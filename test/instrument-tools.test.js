@@ -150,13 +150,14 @@ test('findPresetFile: plug-in folder under any vendor, case-insensitive name, Fo
   assert.throws(() => find('Fat Bass'), {
     message: `preset "Fat Bass" matches 2 files in ${factory}: PreSonus/Mai Tai/Bass/Fat Bass.preset, PreSonus/Mai Tai/Lead/Fat Bass.preset; pass preset as Folder/Name to pick one ("Bass/Fat Bass" or "Lead/Fat Bass")`,
   });
-  assert.throws(() => find('Nowhere/Fat Bass'), /matches 2 files/, 'an unknown folder prefix does not pick one');
+  assert.throws(() => find('Nowhere/Fat Bass'), (e) => /no preset Fat Bass in folder Nowhere/.test(e.message) && e.candidates.includes('Lead/Fat Bass') && e.candidates.includes('Bass/Fat Bass'), 'an unknown folder is refused, not ignored');
+  assert.throws(() => find('Nowhere/default'), /no preset default in folder Nowhere \(candidates: "\.\/default"\)/, 'a single file is not taken under a wrong folder either');
   assert.equal(find('Kick'), null, 'another class is skipped');
   assert.equal(find('Kick', { cid: null }).ext, '.preset');
-  assert.deepEqual(find('my pad'), { file: path.join(user, 'User Presets', 'mai tai', 'My Pad.instrument'), ext: '.instrument' });
+  assert.deepEqual(find('my pad'), { file: path.join(user, 'User Presets', 'mai tai', 'My Pad.instrument'), ext: '.instrument', folderRel: '' });
   // The user's folders win over factory ones, whatever the extension.
   put(path.join(user, 'Mine', 'Mai Tai', 'default.instrument'), Buffer.from('x'));
-  assert.deepEqual(find('default'), { file: path.join(user, 'Mine', 'Mai Tai', 'default.instrument'), ext: '.instrument' });
+  assert.deepEqual(find('default'), { file: path.join(user, 'Mine', 'Mai Tai', 'default.instrument'), ext: '.instrument', folderRel: '' });
   // Same name, same folder, two extensions: refused too; "./Name" picks the one directly in the plug-in folder.
   put(path.join(factory, 'PreSonus', 'Mai Tai', 'Pad.preset'), presetZip(MAITAI, 'Mai Tai'));
   put(path.join(factory, 'PreSonus', 'Mai Tai', 'Pad.fxpreset'), Buffer.from(`<AudioEffectPreset cid="${MAITAI}"/>`));
@@ -166,7 +167,7 @@ test('findPresetFile: plug-in folder under any vendor, case-insensitive name, Fo
   assert.equal(find('My Pad', { exts: ['.preset', '.vstpreset'] }), null);
   assert.equal(find('Gone'), null);
   const vst = findPresetFile({ folder: 'VST Synth', preset: 'Init', cid: '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}', roots });
-  assert.deepEqual(vst, { file: path.join(vst3, 'Vendor', 'VST Synth', 'Init.vstpreset'), ext: '.vstpreset' });
+  assert.deepEqual(vst, { file: path.join(vst3, 'Vendor', 'VST Synth', 'Init.vstpreset'), ext: '.vstpreset', folderRel: '' });
   assert.equal(findPresetFile({ folder: 'VST Synth', preset: 'Other', roots }), null, 'a .preset in a VST3 folder is not taken');
   assert.equal(presetFileClassId(vst.file), '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}');
 });
@@ -416,7 +417,7 @@ test('a renamed instrument: its class comes from the saved synth state, and look
     names: ['Presets/Synths/1 - Lead.fxpreset', 'Presets/Synths/2 - Other.vstpreset'],
     raw: (n) => (n.endsWith('.fxpreset') ? Buffer.from(`<AudioEffectPreset cid="${MAITAI}" version="2"/>`) : vstpreset('ABCDEF019182FAEB4E4453504E4A5058')),
   };
-  assert.equal(savedSynthClassId(zip, 1), MAITAI);
+  assert.equal(savedSynthClassId(zip, 1), MAITAI, 'no title given: any entry of that index');
   assert.equal(savedSynthClassId(zip, 2), '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}');
   assert.equal(savedSynthClassId(zip, 3), null);
   const noName = { pluginClass: () => null, presetClass: () => null, classes: () => [], presetClassById: (cid) => (cid === MAITAI ? { classId: MAITAI, className: 'Mai Tai' } : null) };
@@ -518,4 +519,25 @@ test('list: names that stand for several files are listed as loadable Folder/Nam
   assert.equal(loads.length, 3);
   // Off Windows (no file lookups): the plain list.
   assert.deepEqual((await pluginPresets(call, { channel: 'FX', slot: 0, action: 'list' }, { ...deps, platform: 'linux' })).presets, ['Arena', 'Arena', 'Hall']);
+});
+
+test('a preset file from a subfolder of the plug-in folder warns that it is a whole plug-in preset (inserts only)', async () => {
+  const { factory } = presetLibrary();
+  const sub = { file: path.join(factory, 'PreSonus', 'Mai Tai', 'Lead', 'Fat Bass.preset'), ext: '.preset', folderRel: 'Lead' };
+  const top = { file: path.join(factory, 'PreSonus', 'Mai Tai', 'default.preset'), ext: '.preset', folderRel: '' };
+  const { call } = bridge({ racks: { Voc: ['Pro EQ'] } });
+  const a = await pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Kick' }, loadDeps(sub).deps);
+  assert.equal(a.inPlace, true);
+  assert.equal(a.warning, 'this file is a whole Pro EQ preset: every module takes its values (live_undo does not revert in-place loads)');
+  const b = await pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Kick' }, loadDeps(top).deps);
+  assert.equal(b.warning, undefined, 'a file directly in the plug-in folder has no such warning');
+});
+
+test('savedSynthClassId: the saved entry must carry the instrument\'s name, else null', () => {
+  const zip = { names: ['Presets/Synths/1 - Lead.fxpreset'], raw: () => Buffer.from(`<AudioEffectPreset cid="${MAITAI}" version="2"/>`) };
+  assert.equal(savedSynthClassId(zip, 1, ['Lead']), MAITAI);
+  assert.equal(savedSynthClassId(zip, 1, ['lead']), MAITAI, 'case-insensitive');
+  assert.equal(savedSynthClassId(zip, 1, ['Bass', 'Lead']), MAITAI, 'the name it had in that save also counts');
+  assert.equal(savedSynthClassId(zip, 1, ['Bass']), null, 'another title: another instrument');
+  assert.equal(savedSynthClassId(zip, 1, [null]), null);
 });
