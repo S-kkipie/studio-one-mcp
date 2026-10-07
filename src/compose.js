@@ -32,6 +32,14 @@ async function restoreSelection(call, names) {
   for (const [i, name] of names.entries()) await call('selectTrack', { name, exclusive: i === 0 }).catch(() => {});
 }
 
+// Set the loop range without ever passing through an inverted state: when the new
+// range lies entirely after the current one, move the end first, else the start first.
+async function setLoopRange(call, current, target) {
+  const order = target.start >= current.end ? ['end', 'start'] : ['start', 'end'];
+  for (const k of order) await call('setLoop', { [k]: target[k] });
+  if (typeof target.enable === 'boolean') await call('setLoop', { enable: target.enable });
+}
+
 export async function createPart(call, { track, bar, bars = 1 }) {
   checkBar(bar);
   if (!Number.isInteger(bars) || bars < 1) throw new Error('bars must be an integer >= 1');
@@ -40,11 +48,11 @@ export async function createPart(call, { track, bar, bars = 1 }) {
   const loop = { start: transport.loopRange.start.seconds, end: transport.loopRange.end.seconds, enable: !!transport.loop };
   let r;
   try {
-    await call('setLoop', { start, end });
+    await setLoopRange(call, loop, { start, end });
     await call('selectTrack', { name: track });
     r = await call('command', { category: 'Instrument Parts', name: 'Insert Instrument Part' });
   } finally {
-    await call('setLoop', loop);
+    await setLoopRange(call, { start, end }, loop).catch(() => {});
     await restoreSelection(call, selectedTracks);
   }
   if (!r || !r.executed) throw new Error(`could not insert an instrument part on ${track} (is it an instrument track?)`);
@@ -54,6 +62,10 @@ export async function createPart(call, { track, bar, bars = 1 }) {
 export async function writeNotes(call, { track, bar, notes, createPart: create = true }) {
   checkBar(bar);
   if (!Array.isArray(notes) || !notes.length) throw new Error('notes: one or more { pitch, beat, length, velocity? }');
+  notes.forEach((n, i) => {
+    if (!Number.isFinite(n.beat) || n.beat < 0) throw new Error(`note ${i + 1}: beat must be >= 0`);
+    if (!Number.isFinite(n.length) || n.length <= 0) throw new Error(`note ${i + 1}: length must be > 0 beats`);
+  });
   const list = notes.map((n) => ({ pitch: toMidi(n.pitch), beat: n.beat, length: n.length, velocity: n.velocity ?? 100 }));
   const lastBeat = Math.max(...list.map((n) => n.beat + n.length));
   const span = Math.max(1, Math.ceil(lastBeat / BEATS_PER_BAR - EPS));

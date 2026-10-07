@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPart, writeNotes, writeChords, writeDrums } from '../src/compose.js';
 
-function bridge({ parts = [], insertWorks = true } = {}) {
-  const state = { loop: false, loopStart: 10, loopEnd: 20, position: 3, selected: ['Vox'], parts: parts.map((p) => ({ ...p })) };
+function bridge({ parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, failRestore = false } = {}) {
+  const state = { loop: false, loopStart, loopEnd, position: 3, selected: ['Vox'], parts: parts.map((p) => ({ ...p })) };
   const calls = [];
   const barSeconds = (bars) => { const [b, beat = 1] = bars.split('.').map(Number); return (b - 1) * 2 + (beat - 1) * 0.5; };
   const call = async (op, args = {}) => {
@@ -16,8 +16,10 @@ function bridge({ parts = [], insertWorks = true } = {}) {
         if (typeof args.positionSeconds === 'number') state.position = args.positionSeconds;
         return { position: { seconds: state.position } };
       case 'setLoop':
-        if (typeof args.start === 'number') state.loopStart = args.start;
-        if (typeof args.end === 'number') state.loopEnd = args.end;
+        // like Studio One: a start beyond the current end, or an end before the current start, is refused
+        if (failRestore && typeof args.enable === 'boolean') throw new Error('setLoop failed');
+        if (typeof args.start === 'number') { if (args.start > state.loopEnd) throw new Error('start beyond end'); state.loopStart = args.start; }
+        if (typeof args.end === 'number') { if (args.end < state.loopStart) throw new Error('end before start'); state.loopEnd = args.end; }
         if (typeof args.enable === 'boolean') state.loop = args.enable;
         return {};
       case 'selectTrack': state.selected = args.exclusive === false ? [...state.selected, args.name] : [args.name]; return { selected: state.selected };
@@ -83,4 +85,27 @@ test('writeDrums: grid over bars', async () => {
   const r = await writeDrums(b.call, { track: 'Drums', bar: 1, bars: 2, pattern: { kick: 'x...x...x...x...', snare: '....x.......x...' } });
   assert.equal(r.added, 12);
   assert.deepEqual(b.state.parts.map((p) => [p.start, p.end]), [[0, 4]]);
+});
+
+test('createPart restores the loop exactly when the part lies before or after the original loop', async () => {
+  const a = bridge();
+  await createPart(a.call, { track: 'Keys', bar: 1 });
+  assert.deepEqual([a.state.loopStart, a.state.loopEnd, a.state.loop], [10, 20, false]);
+  const b = bridge({ loopStart: 0, loopEnd: 1 });
+  const r = await createPart(b.call, { track: 'Keys', bar: 20 });
+  assert.deepEqual(r.part, { start: 38, end: 40 });
+  assert.deepEqual([b.state.loopStart, b.state.loopEnd, b.state.loop], [0, 1, false]);
+});
+
+test('createPart: a failing loop restore neither skips the selection restore nor masks the insert error', async () => {
+  const b = bridge({ insertWorks: false, failRestore: true });
+  await assert.rejects(createPart(b.call, { track: 'Keys', bar: 1 }), /could not insert an instrument part/);
+  assert.deepEqual(b.state.selected, ['Vox']);
+});
+
+test('writeNotes validates notes before moving the playhead', async () => {
+  const b = bridge();
+  await assert.rejects(writeNotes(b.call, { track: 'Keys', bar: 1, notes: [{ pitch: 60, beat: 0, length: 1 }, { pitch: 60, beat: -1, length: 1 }] }), /note 2: beat must be >= 0/);
+  await assert.rejects(writeNotes(b.call, { track: 'Keys', bar: 1, notes: [{ pitch: 60, beat: 0, length: 0 }] }), /note 1: length must be > 0 beats/);
+  assert.equal(b.calls.length, 0);
 });
