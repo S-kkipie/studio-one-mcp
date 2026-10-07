@@ -1,7 +1,7 @@
 // Where things live on this machine. Everything is overridable by env var so the
 // server works for other Studio One versions and non-default song folders.
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 
 const home = homedir();
@@ -22,7 +22,7 @@ export function studioOneProfiles() {
 }
 
 export function songRoots() {
-  if (process.env.STUDIO_ONE_SONGS) return process.env.STUDIO_ONE_SONGS.split(':').filter(Boolean);
+  if (process.env.STUDIO_ONE_SONGS) return process.env.STUDIO_ONE_SONGS.split(delimiter).filter(Boolean);
   return [join(home, 'Documents/Studio One/Songs'), join(home, 'Documents/Studio Pro/Songs')].filter(existsSync);
 }
 
@@ -41,7 +41,7 @@ export function studioOneApps() {
 
 // Where plug-in presets live: the user's own first, then the factory ones.
 export function presetRoots() {
-  if (process.env.STUDIO_ONE_PRESETS) return process.env.STUDIO_ONE_PRESETS.split(':').filter(Boolean);
+  if (process.env.STUDIO_ONE_PRESETS) return process.env.STUDIO_ONE_PRESETS.split(delimiter).filter(Boolean);
   const user = [join(home, 'Documents/Studio One/Presets'), join(home, 'Documents/Studio Pro/Presets')];
   return [...user, ...studioOneApps().map((a) => join(a, 'Presets'))].filter(existsSync);
 }
@@ -49,7 +49,7 @@ export function presetRoots() {
 // Studio One's built-in remote-control map (surfacedata XML): curated parameter
 // names for every PreSonus plug-in, keyed by plug-in class.
 export function remoteMapFiles() {
-  if (process.env.STUDIO_ONE_REMOTE_MAP) return process.env.STUDIO_ONE_REMOTE_MAP.split(':').filter(Boolean);
+  if (process.env.STUDIO_ONE_REMOTE_MAP) return process.env.STUDIO_ONE_REMOTE_MAP.split(delimiter).filter(Boolean);
   // The Windows path is a guess (only the Mac layout has been seen); a miss just means fewer names.
   const rel = isMac ? 'PlugIns/remoteservice.bundle/Contents/Resources/device/remotedevice.surfacedata' : 'Plugins/remoteservice/device/remotedevice.surfacedata';
   return studioOneApps().map((a) => join(a, rel)).filter(existsSync);

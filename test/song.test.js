@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readSong, summarizeSong } from '../src/song.js';
-import { fixture } from './helpers/fixtures.js';
+import { fixture, mediaPath } from './helpers/fixtures.js';
 
 test('tempo, time signature and metadata', () => {
   const s = readSong(fixture());
@@ -27,8 +27,8 @@ test('takes: active layer drives track events; positions cross tempo and meter c
   assert.equal(ev.name, 'take2');
   // beat 34 = 32 beats at 0.5s (16s) + 2 beats at 1s → 18s; bar 9 is at beat 32 so this is bar 9 beat 3.
   assert.deepEqual([ev.start.bar, ev.start.beat, ev.start.seconds, ev.lengthSeconds], [9, 3, 18, 3]);
-  assert.equal(ev.file, '/tmp/Media/Vox 2.wav');
-  assert.equal(vox.layers[0].events[0].file, '/tmp/Media/Vox 1.wav', 'file URLs are decoded');
+  assert.equal(ev.file, mediaPath('Vox 2.wav'));
+  assert.equal(vox.layers[0].events[0].file, mediaPath('Vox 1.wav'), 'file URLs are decoded');
 });
 
 test('mixer: dB, pan, mute, inserts without rack state entries', () => {

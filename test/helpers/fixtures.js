@@ -3,6 +3,7 @@
 import { writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { zipSync, strToU8 } from 'fflate';
 
 // A minimal song in the shape Studio One 5.5 writes: 120 bpm for 8 bars of 4/4,
@@ -46,10 +47,14 @@ const songXml = `﻿<?xml version="1.0" encoding="UTF-8"?>
   </Attributes>
 </Song>`;
 
+// Studio One on Windows writes file URLs with a drive letter; fileURLToPath rejects drive-less ones there.
+const MEDIA_URL_ROOT = process.platform === 'win32' ? 'file:///C:/tmp/Media' : 'file:///tmp/Media';
+export const mediaPath = (name) => fileURLToPath(new URL(`${MEDIA_URL_ROOT}/${name}`));
+
 const mediaXml = `<MediaPool><Attributes x:id="rootFolder"><MediaFolder name="Audio">
-  <AudioClip mediaID="{CLIP-1}"><Url x:id="path" type="1" url="file:///tmp/Media/Vox%201.wav"/>
+  <AudioClip mediaID="{CLIP-1}"><Url x:id="path" type="1" url="${MEDIA_URL_ROOT}/Vox%201.wav"/>
     <Attributes x:id="format" frameCount="176400" sampleRate="44100" numChannels="1" bitDepth="24"/></AudioClip>
-  <AudioClip mediaID="{CLIP-2}"><Url x:id="path" type="1" url="file:///tmp/Media/Vox 2.wav"/>
+  <AudioClip mediaID="{CLIP-2}"><Url x:id="path" type="1" url="${MEDIA_URL_ROOT}/Vox 2.wav"/>
     <Attributes x:id="format" frameCount="132300" sampleRate="44100" numChannels="1" bitDepth="24"/></AudioClip>
 </MediaFolder></Attributes></MediaPool>`;
 

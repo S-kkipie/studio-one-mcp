@@ -85,7 +85,7 @@ test('serverEntry from npx: registers npx pinned to this version, not the cache 
   assert.deepEqual(serverEntry({ path: win, platform: 'win32', pkgVersion: '0.2.0', midiPort: 'loopMIDI Port' }), {
     command: 'cmd', args: ['/c', 'npx', '-y', 'studio-one-mcp@0.2.0'], env: { STUDIO_ONE_MCP_MIDI_PORT: 'loopMIDI Port' },
   });
-  assert.deepEqual(serverEntry({ path: cached }).args, ['-y', `studio-one-mcp@${version}`], 'defaults to package.json');
+  assert.deepEqual(serverEntry({ path: cached, platform: 'darwin' }).args, ['-y', `studio-one-mcp@${version}`], 'defaults to package.json');
 });
 
 test('claude mcp add arguments: user scope, env, then the command', () => {

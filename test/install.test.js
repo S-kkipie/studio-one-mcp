@@ -8,6 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 
+// Studio One's unencoded file URL for a directory: file:///C:/x on Windows, file:///x elsewhere.
+const homeUrl = (p) => 'file://' + (p.startsWith('/') ? '' : '/') + p.replaceAll('\\', '/');
 const script = fileURLToPath(new URL('../scripts/install-device.js', import.meta.url));
 
 function run(args, home) {
@@ -33,7 +35,7 @@ test('installs every device file plus a generated BridgeConfig.js', () => {
   const cfg = readFileSync(join(target, 'BridgeConfig.js'), 'utf8');
   const config = JSON.parse(cfg.slice(cfg.indexOf('{'), cfg.lastIndexOf('}') + 1));
   // Studio One stores file URLs unencoded; a %20 here would point nowhere.
-  assert.equal(config.mailbox, `file://${home}/mailbox/`);
+  assert.equal(config.mailbox, `${homeUrl(home)}/mailbox/`);
   assert.equal(config.allowEval, false);
   assert.ok(existsSync(join(home, 'mailbox')));
 });
@@ -62,7 +64,7 @@ test('installs the edit-task extension: metadata plus a ZIP package with the mai
   const files = unzipSync(readFileSync(join(ext, 'scripts', 'studio-one-mcp.package')));
   assert.deepEqual(Object.keys(files).sort(), ['McpEdit.js', 'McpEditConfig.js', 'McpTrackEdit.js', 'McpTrackOps.js', 'classfactory.xml', 'metainfo.xml']);
   const cfg = strFromU8(files['McpEditConfig.js']);
-  assert.equal(JSON.parse(cfg.slice(cfg.indexOf('{'), cfg.lastIndexOf('}') + 1)).mailbox, `file://${home}/mailbox/`);
+  assert.equal(JSON.parse(cfg.slice(cfg.indexOf('{'), cfg.lastIndexOf('}') + 1)).mailbox, `${homeUrl(home)}/mailbox/`);
 });
 
 test('missing profile is a clear error', () => {

@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const NOTE = 119; // must match <MidiMessage status="#90" address="#77"> in StudioOneMCP.surface.xml
-const PORT = process.env.STUDIO_ONE_MCP_MIDI_PORT || 'IAC';
+const DEFAULT_PORT = process.platform === 'win32' ? 'studio-one-mcp' : 'IAC';
+const PORT = process.env.STUDIO_ONE_MCP_MIDI_PORT || DEFAULT_PORT;
 
 let output = null;
 let portName = null;
@@ -24,10 +25,12 @@ function open() {
   const index = names.findIndex((n) => n.toLowerCase().includes(PORT.toLowerCase()));
   if (index < 0) {
     out.closePort?.();
+    const hint = process.platform === 'win32'
+      ? 'On Windows run loopMIDI and add a port named "studio-one-mcp"'
+      : 'On macOS enable Audio MIDI Setup → IAC Driver → "Device is online"';
     throw new Error(
       `No MIDI output matching "${PORT}" (found: ${names.join(', ') || 'none'}). ` +
-        'On macOS enable Audio MIDI Setup → IAC Driver → "Device is online", and set the MCP Bridge ' +
-        "device's Receive From to that bus. Override with STUDIO_ONE_MCP_MIDI_PORT.",
+        `${hint}, and set the MCP Bridge device's Receive From to that port. Override with STUDIO_ONE_MCP_MIDI_PORT.`,
     );
   }
   out.openPort(index);

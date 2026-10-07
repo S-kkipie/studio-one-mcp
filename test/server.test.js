@@ -3,7 +3,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -102,15 +102,15 @@ test('song_read: unknown song is a tool error, not a crash', async () => {
 
 test('song_history: autosaves newest first, also for autosave-only songs', async () => {
   const { data } = await call('song_history', { song: 'Demo Tune' });
-  assert.deepEqual(data.map((h) => h.file.split('/').pop()), ['Demo Tune 2 (Autosaved).song', 'Demo Tune 1 (Autosaved).song']);
+  assert.deepEqual(data.map((h) => basename(h.file)), ['Demo Tune 2 (Autosaved).song', 'Demo Tune 1 (Autosaved).song']);
   assert.equal((await call('song_history', { song: 'Sketch' })).data.length, 1);
 });
 
 test('song_diff: against the newest autosave by default, older to newer; errors without autosaves', async () => {
   const { data } = await call('song_diff', { song: 'Demo Tune' });
   // The save (2026-01-02) is newer than both autosaves, so the newest autosave is "from".
-  assert.equal(data.from.split('/').pop(), 'Demo Tune 2 (Autosaved).song');
-  assert.equal(data.to.split('/').pop(), 'Demo Tune.song');
+  assert.equal(basename(data.from), 'Demo Tune 2 (Autosaved).song');
+  assert.equal(basename(data.to), 'Demo Tune.song');
   assert.deepEqual([data.changes, data.diff], [0, []]);
   const none = await call('song_diff', { song: 'Old Tune' });
   assert.equal(none.isError, true);

@@ -14,5 +14,5 @@ const probe = (port) =>
 test('a port that does not exist gives setup instructions', () => {
   const out = probe('no-such-port-xyz');
   assert.match(out, /^err No MIDI output matching "no-such-port-xyz"/);
-  assert.match(out, /IAC Driver/);
+  assert.match(out, process.platform === 'win32' ? /loopMIDI/ : /IAC Driver/);
 });
