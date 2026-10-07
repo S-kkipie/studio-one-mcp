@@ -89,7 +89,7 @@ Modes:
 - **drive:**
   1. Wait up to `S1MCP_XD_TIMEOUT_MS` (default 15000) for a visible `CCLDialogClass` window of that PID that is **not** in `S1MCP_XD_BEFORE` and has an owner. Print `{"event":"dialog","hwnd","title"}`.
   2. Post `VK_RETURN`. Wait up to 5 s for it to close. If it does not, post `VK_ESCAPE` and finish `{"ok":false,"reason":"dialog did not accept OK"}`.
-  3. Then watch for `S1MCP_XD_WATCH_MS` (default 4000) for another new `CCLDialogClass` or `#32770` window of the PID: an alert such as "Nothing to export". Post `VK_RETURN` to it and finish `{"ok":false,"reason":"alert","title"}`.
+  3. Then watch for `S1MCP_XD_WATCH_MS` (default 4000) for another new `CCLDialogClass` or `#32770` window of the PID: an alert such as "Nothing to export". Post `VK_ESCAPE` to it, which is safer than Enter on a Yes/No box, and finish `{"ok":false,"reason":"alert","title"}`.
   4. Otherwise finish `{"ok":true}`.
   - With no dialog in time: `{"ok":false,"reason":"no dialog"}`.
 
