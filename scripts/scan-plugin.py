@@ -62,16 +62,99 @@ def extract_xml(raw):
     return None
 
 
-def xml_attrs(xml):
-    """Flat {attrName: value} of every attribute in the XML text (first occurrence wins)."""
+def xml_attr_map(xml):
+    """Map attribute keys of the XML state to their values.
+
+    Plain attributes are keyed by bare name (first occurrence wins). Attributes of an
+    element that carries an `id` (JUCE APVTS style: <PARAM id="x" value="..."/>) are keyed
+    "TAG[id=x]@attr" so that a shared attribute name never collides.
+    """
+    import xml.etree.ElementTree as ET
     attrs = {}
+    try:
+        root = ET.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>", "", xml).strip())
+        for el in root.iter():
+            ident = el.attrib.get("id")
+            for n, v in el.attrib.items():
+                if ident is not None and n != "id":
+                    attrs.setdefault("%s[id=%s]@%s" % (el.tag, ident, n), v)
+                else:
+                    attrs.setdefault(n, v)
+        return attrs
+    except Exception:
+        pass
     for m in re.finditer(r'([A-Za-z_][\w.\-:]*)="([^"]*)"', xml):
         attrs.setdefault(m.group(1), m.group(2))
     return attrs
 
 
+def xml_attrs(xml):
+    return xml_attr_map(xml)
+
+
 def norm(s):
     return re.sub(r"[_\s]+", "", s).lower()
+
+
+SYNONYMS = {"lo": "low", "hi": "high", "mid": "middle", "l": "left", "r": "right",
+            "freq": "frequency"}
+
+
+def signature(s):
+    """Token signature: split on _/space/camelCase, lowercase, expand synonyms."""
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    toks = [t for t in re.split(r"[^A-Za-z0-9]+", s) if t]
+    return "".join(SYNONYMS.get(t.lower(), t.lower()) for t in toks)
+
+
+def unique_claims(candidates):
+    """candidates: {param key: attr}. Drop every attr claimed by more than one key."""
+    counts = {}
+    for a in candidates.values():
+        counts[a] = counts.get(a, 0) + 1
+    return {k: a for k, a in candidates.items() if counts[a] == 1}
+
+
+def plugin_binaries(path):
+    import os
+    if os.path.isfile(path):
+        return [path]
+    out = []
+    for dp, _, fs in os.walk(os.path.join(path, "Contents")):
+        out += [os.path.join(dp, f) for f in fs if f.lower().endswith((".vst3", ".dll"))]
+    return out
+
+
+def parameters_map(path):
+    """Neural-DSP style embedded <parametersMap>: {externalName: stateAttr}. {} if absent."""
+    import mmap
+    text = None
+    for f in plugin_binaries(path):
+        try:
+            with open(f, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                i = mm.find(b"<parametersMap")
+                if i < 0:
+                    continue
+                j = mm.find(b"</parametersMap>", i)
+                if j < 0:
+                    continue
+                text = mm[i:j + 16].decode("utf-8", errors="replace")
+                break
+        except Exception:
+            continue
+    if text is None:
+        return {}
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    names = {}
+    for m in re.finditer(r"<(\w+)\s([^>]*?property=\"[^\"]*\"[^>]*?)/?>", text, re.S):
+        at = dict(re.findall(r'([\w.\-:]+)\s*=\s*"([^"]*)"', m.group(2)))
+        prop = at.get("property", "")
+        attr = prop.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+        if not attr:
+            continue
+        ext = at.get("externalName") or at.get("externalID") or attr
+        names.setdefault(ext, set()).add(attr)
+    return {n: next(iter(a)) for n, a in names.items() if len(a) == 1}
 
 
 def is_bypass(key, prm):
@@ -133,11 +216,33 @@ def main(path):
         except Exception:
             state_round_trip = False
 
+    methods = []
+    xml_attr_names = []
+    unmapped = []
     if xml_state:
-        base_attrs = xml_attrs(base_xml)
-        # Method 1: drive each param through the plug-in and diff the XML attributes.
-        if state_round_trip and len(non_bypass) <= MAX_DIFF_PARAMS:
+        base_attrs = xml_attr_map(base_xml)
+        xml_attr_names = sorted(base_attrs)
+        # (a) vendor adapter: embedded <parametersMap> (Neural DSP).
+        vmap = parameters_map(path)
+        if vmap:
+            by_name = {}
             for k, prm in non_bypass:
+                by_name.setdefault(get(prm, "name", k), []).append(k)
+            cand = {}
+            for ext, attr in vmap.items():
+                ks = by_name.get(ext, [])
+                if len(ks) == 1:
+                    cand[ks[0]] = attr
+            got = unique_claims(cand)
+            if got:
+                state_keys.update(got)
+                methods.append("vendor-parametersMap")
+        # (b) drive each param through the plug-in and diff the XML attributes.
+        if state_round_trip and len(non_bypass) <= MAX_DIFF_PARAMS:
+            cand = {}
+            for k, prm in non_bypass:
+                if k in state_keys:
+                    continue
                 try:
                     old = prm.raw_value
                     prm.raw_value = 0.37 if abs(old - 0.37) > 0.05 else 0.81
@@ -145,28 +250,44 @@ def main(path):
                     prm.raw_value = old
                     if x is None:
                         continue
-                    a = xml_attrs(x)
+                    a = xml_attr_map(x)
                     changed = [n for n in a if base_attrs.get(n) != a[n]]
                     if len(changed) == 1:
-                        state_keys[k] = changed[0]
+                        cand[k] = changed[0]
                 except Exception:
                     continue
-            if state_keys:
-                method = "state-diff"
-        # Method 2: normalised-name match against XML attribute names.
-        by_norm = {}
+            taken = set(state_keys.values())
+            got = {k: a for k, a in unique_claims(cand).items() if a not in taken}
+            if got:
+                state_keys.update(got)
+                methods.append("state-diff")
+        # (c) fallback: synonym-normalised signature match on key and display name,
+        # accepted only when unique on both sides.
+        sig_index = {}
         for n in base_attrs:
-            by_norm.setdefault(norm(n), n)
-        added = 0
-        for k, _ in non_bypass:
+            if "[" not in n:
+                sig_index.setdefault(signature(n), set()).add(n)
+        for n in base_attrs:  # APVTS id values act as names too
+            m = re.match(r"^[^\[]+\[id=(.*)\]@value$", n)
+            if m:
+                sig_index.setdefault(signature(m.group(1)), set()).add(n)
+        taken = set(state_keys.values())
+        cand = {}
+        for k, prm in non_bypass:
             if k in state_keys:
                 continue
-            hit = by_norm.get(norm(k))
-            if hit:
-                state_keys[k] = hit
-                added += 1
-        if added:
-            method = "state-diff+name-match" if method else "name-match"
+            hits = set()
+            for nm in (k, get(prm, "name", "") or ""):
+                hits |= sig_index.get(signature(nm), set()) if nm else set()
+            hits = {h for h in hits if h not in taken}
+            if len(hits) == 1:
+                cand[k] = next(iter(hits))
+        got = unique_claims(cand)
+        if got:
+            state_keys.update(got)
+            methods.append("name-match")
+        unmapped = [k for k, _ in non_bypass if k not in state_keys]
+    method = "+".join(methods) if methods else None
 
     result = {
         "name": get(p, "name", None) or path.replace("\\", "/").split("/")[-1],
@@ -179,6 +300,8 @@ def main(path):
         },
         "stateKeys": state_keys,
         "stateKeyMethod": method,
+        "xmlAttrs": xml_attr_names,
+        "unmappedKeys": unmapped,
     }
     sys.stdout.write(json.dumps(result) + "\n")
 
