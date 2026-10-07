@@ -353,7 +353,7 @@ class Bridge {
         let ev;
         while (it && (ev = it.next())) {
             if (!has(ev, "createSequenceIterator", "function")) continue;
-            const part = { name: has(ev, "name", "string") ? ev.name : "", start: seconds(ev.startTime), end: seconds(ev.endTime), startBeat: ev.startTime && has(ev.startTime, "musical", "number") ? Math.round(ev.startTime.musical * 1000) / 1000 : null, muted: !!ev.isMuted, notes: [], noteCount: 0 };
+            const part = { name: has(ev, "name", "string") ? ev.name : "", start: seconds(ev.startTime), end: seconds(ev.endTime), startBeat: ev.startTime && has(ev.startTime, "musical", "number") ? Math.round(ev.startTime.musical * 1000) / 1000 : null, endBeat: ev.endTime && has(ev.endTime, "musical", "number") ? Math.round(ev.endTime.musical * 1000) / 1000 : null, muted: !!ev.isMuted, notes: [], noteCount: 0 };
             const ni = ev.createSequenceIterator();
             while (ni && has(ni, "done", "function") && !ni.done()) {
                 const n = ni.next();

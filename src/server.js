@@ -29,7 +29,7 @@ import { mixSnapshot } from './mixsnap.js';
 import { bounce } from './bounce.js';
 import { diffSongs } from './diff.js';
 import { gridBeats } from './grid.js';
-import { createPart, writeNotes, writeChords, writeDrums } from './compose.js';
+import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd } from './compose.js';
 import { version } from './version.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
@@ -220,8 +220,8 @@ server.tool(
       const empty = (parts || []).length > 0 && parts.every((p) => p.noteCount === 0);
       if (empty) {
         if (ops.length !== 1) throw new Error('the track\'s parts have no notes yet: send the add on its own first (or use live_write_notes), then the other operations');
-        const first = parts[0];
-        const r = await trackTask(call, { op: 'addNotes', track, at: first.start, notes: (ops[0].notes || []).map((n) => ({ ...n, beat: n.beat - (first.startBeat ?? 0) })) });
+        const place = emptyPartAdd(parts, ops[0].notes || [], track);
+        const r = await trackTask(call, { op: 'addNotes', track, at: place.at, notes: place.notes });
         return { track, applied: [{ op: 'add', count: r.added }], errors: r.errors, note: 'Added through MCP Track Edit (the part had no notes).' };
       }
     }

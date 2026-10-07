@@ -97,3 +97,14 @@ export async function writeDrums(call, { track, bar, bars = 1, pattern, stepsPer
   if (!notes.length) throw new Error('the pattern has no hits');
   return writeNotes(call, { track, bar, notes });
 }
+
+// Choose the (empty) part an add lands in and rebase the notes' song beats onto its start.
+export function emptyPartAdd(parts, notes, track = 'the track') {
+  if ((parts || []).some((p) => typeof p.startBeat !== 'number' || typeof p.endBeat !== 'number')) {
+    throw new Error('cannot place notes: Studio One did not report part positions (reinstall the device and restart Studio One), or use live_write_notes');
+  }
+  const minBeat = Math.min(...notes.map((n) => n.beat));
+  const hit = parts.filter((p) => p.startBeat <= minBeat && minBeat < p.endBeat).sort((a, b) => a.startBeat - b.startBeat).pop();
+  if (!hit) throw new Error(`no part covers beat ${minBeat} on ${track}; use live_write_notes or live_create_part`);
+  return { at: hit.start, notes: notes.map((n) => ({ ...n, beat: n.beat - hit.startBeat })) };
+}

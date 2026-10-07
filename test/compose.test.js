@@ -1,7 +1,7 @@
 // Composition over a fake bridge: 120 bpm 4/4, so bar n starts at (n-1)*2 seconds.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPart, writeNotes, writeChords, writeDrums } from '../src/compose.js';
+import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd } from '../src/compose.js';
 
 function bridge({ parts = [], insertWorks = true, loopStart = 10, loopEnd = 20, failRestore = false } = {}) {
   const state = { loop: false, loopStart, loopEnd, position: 3, selected: ['Vox'], parts: parts.map((p) => ({ ...p })) };
@@ -108,4 +108,21 @@ test('writeNotes validates notes before moving the playhead', async () => {
   await assert.rejects(writeNotes(b.call, { track: 'Keys', bar: 1, notes: [{ pitch: 60, beat: 0, length: 1 }, { pitch: 60, beat: -1, length: 1 }] }), /note 2: beat must be >= 0/);
   await assert.rejects(writeNotes(b.call, { track: 'Keys', bar: 1, notes: [{ pitch: 60, beat: 0, length: 0 }] }), /note 1: length must be > 0 beats/);
   assert.equal(b.calls.length, 0);
+});
+
+test('emptyPartAdd: single part at bar 1', () => {
+  const r = emptyPartAdd([{ start: 0, startBeat: 0, endBeat: 4 }], [{ pitch: 60, beat: 1, length: 1 }]);
+  assert.deepEqual(r, { at: 0, notes: [{ pitch: 60, beat: 1, length: 1 }] });
+});
+test('emptyPartAdd: picks the part covering the first note and rebases', () => {
+  const parts = [{ start: 0, startBeat: 0, endBeat: 4 }, { start: 4, startBeat: 8, endBeat: 12 }];
+  const r = emptyPartAdd(parts, [{ pitch: 60, beat: 9, length: 1 }, { pitch: 64, beat: 10, length: 1 }]);
+  assert.equal(r.at, 4);
+  assert.deepEqual(r.notes.map((n) => n.beat), [1, 2]);
+});
+test('emptyPartAdd: missing positions throw', () => {
+  assert.throws(() => emptyPartAdd([{ start: 0, startBeat: null, endBeat: null }], [{ pitch: 60, beat: 0, length: 1 }]), /did not report part positions/);
+});
+test('emptyPartAdd: note beyond every part throws', () => {
+  assert.throws(() => emptyPartAdd([{ start: 0, startBeat: 0, endBeat: 4 }], [{ pitch: 60, beat: 6, length: 1 }]), /no part covers beat 6/);
 });
