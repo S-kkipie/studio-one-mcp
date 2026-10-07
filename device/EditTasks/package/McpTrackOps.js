@@ -404,6 +404,55 @@ mtoOps.selectSection = function (context, op) {
 	return { selected: mtoSectionInfo(pick.event, pick.number) };
 };
 
+// ---- chord track ----------------------------------------------------------------------
+// Seen on 7.2.3: context.editor.model.chords.getChordTrack() is the chord track (its name is
+// localized); its events have startTime/endTime and chord.name ("Cm"). The iterator yields them
+// newest first. functions.removeEvent(ev) removes one; it shows after the task run.
+
+function mtoChordTrack(context) {
+	var ed = context ? context.editor : null;
+	var model = ed ? ed.model : null;
+	var chords = model ? model.chords : null;
+	if (!mtoFn(chords, "getChordTrack")) return null;
+	var t = chords.getChordTrack();
+	return mtoFn(t, "createIterator") ? t : null;
+}
+
+function mtoChordInfo(ev) {
+	var c = ev ? ev.chord : null;
+	return { name: c && typeof c.name === "string" ? c.name : "", start: mtoSeconds(ev.startTime), end: mtoSeconds(ev.endTime) };
+}
+
+function mtoChordsIn(track, op) {
+	var from = typeof op.from === "number" ? op.from : null, to = typeof op.to === "number" ? op.to : null;
+	var list = mtoEvents(track), out = [];
+	for (var i = 0; i < list.length; i++) {
+		var info = mtoChordInfo(list[i]);
+		if (from !== null && info.end !== null && info.end <= from) continue;
+		if (to !== null && info.start !== null && info.start >= to) continue;
+		out.push({ ev: list[i], info: info });
+	}
+	return out;
+}
+
+mtoOps.chords = function (context, op) {
+	var t = mtoChordTrack(context);
+	if (!t) return { error: "the chord track is not available" };
+	var hits = mtoChordsIn(t, op), out = [];
+	for (var i = 0; i < hits.length; i++) out.push(hits[i].info);
+	return { chords: out };
+};
+
+mtoOps.removeChords = function (context, op) {
+	var t = mtoChordTrack(context);
+	if (!t) return { error: "the chord track is not available" };
+	var f = context.functions;
+	if (!mtoFn(f, "removeEvent")) return { error: "removing chord events is not available" };
+	var hits = mtoChordsIn(t, op), removed = [];
+	for (var i = 0; i < hits.length; i++) { f.removeEvent(hits[i].ev); removed.push(hits[i].info); }
+	return { removed: removed };
+};
+
 // ---- markers and time signatures ----------------------------------------------------
 
 function mtoMarkerInfo(ev, number) {

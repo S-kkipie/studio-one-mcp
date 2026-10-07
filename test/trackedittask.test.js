@@ -414,3 +414,44 @@ test('slotCommand with a name addresses that FX slot instead of the index', () =
   assert.match(results[1].error, /no plug-in in slot/);
   assert.equal(log.length, 2);
 });
+
+// ---- chord track ----
+function chordSong(withRemove = true) {
+  const s = song();
+  const tm = (sec) => ({ seconds: sec });
+  const evs = [['Am', 4, 6], ['G', 2, 4], ['C', 0, 2]].map(([n, a, b]) => ({ startTime: tm(a), endTime: tm(b), chord: { name: n } }));
+  const removed = [];
+  s.context.editor.model.chords = { getChordTrack: () => ({ createIterator: () => { let k = 0; return { next: () => evs[k++] || null }; } }) };
+  if (withRemove) s.context.functions.removeEvent = (e) => removed.push(e.chord.name);
+  else delete s.context.functions.removeEvent;
+  return { s, removed };
+}
+function runChords(ops, withRemove) {
+  const t = load();
+  const c = chordSong(withRemove);
+  t.request(ops);
+  t.task.performEdit(c.s.context);
+  return { results: t.result().results, removed: c.removed };
+}
+
+test('chords lists the chord track in time order, filtered by range', () => {
+  const { results } = runChords([{ op: 'chords' }, { op: 'chords', from: 2, to: 4 }]);
+  assert.deepEqual(results[0].chords.map((c) => [c.name, c.start, c.end]), [['C', 0, 2], ['G', 2, 4], ['Am', 4, 6]]);
+  assert.deepEqual(results[1].chords.map((c) => c.name), ['G']);
+});
+
+test('removeChords removes the chords in range and reports them', () => {
+  const { results, removed } = runChords([{ op: 'removeChords', from: 1, to: 3 }]);
+  assert.deepEqual(removed.slice().sort(), ['C', 'G']);
+  assert.deepEqual(results[0].removed.map((c) => c.name), ['C', 'G']);
+});
+
+test('chord ops report a missing chord track or removeEvent', () => {
+  const t = load();
+  t.request([{ op: 'chords' }]);
+  t.task.performEdit({ functions: {} });
+  assert.equal(t.result().results[0].error, 'the chord track is not available');
+  const { results, removed } = runChords([{ op: 'removeChords' }], false);
+  assert.equal(results[0].error, 'removing chord events is not available');
+  assert.deepEqual(removed, []);
+});
