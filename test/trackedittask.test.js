@@ -461,3 +461,14 @@ test('chords: a chord touching the range edge (rounded times) is not in the rang
   const { results } = runChords([{ op: 'chords', from: 1.9996, to: 4.0004 }]);
   assert.deepEqual(results[0].chords.map((c) => c.name), ['G']);
 });
+
+test('markers and signatures find the marker track under a localized name', () => {
+  const t = load();
+  const s = song();
+  s.tracks.find((tr) => tr.name === 'Marker Track').name = 'Pista de macadores'; // as the Spanish 7.2.3 names it
+  t.request([{ op: 'markers' }, { op: 'signatures', at: [0, 20] }]);
+  t.task.performEdit(s.context);
+  const [m, sg] = t.result().results;
+  assert.deepEqual(m.markers.map((x) => x.name), ['Start', 'Hook', 'End']);
+  assert.deepEqual(sg.signatures.map((x) => `${x.numerator}/${x.denominator}`), ['4/4', '3/4']);
+});

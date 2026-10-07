@@ -177,3 +177,11 @@ test('setChords: compares chords by root and intervals, not spelling', async () 
   const r = await setChords(b.call, { bar: 3, progression: 'Cmaj7' }, deps(b.log));
   assert.equal(r.mismatches, undefined);
 });
+
+test('setChords: an empty added list (seen live) falls back to the track-name diff', async () => {
+  const b = bridge({ chordsAfter: ['G'] });
+  const orig = b.call;
+  const call = async (op, a) => (op === 'addTrack' ? (await orig(op, a), { added: [] }) : orig(op, a));
+  const r = await setChords(call, { bar: 3, progression: 'G' }, deps(b.log));
+  assert.equal(r.mismatches, undefined);
+});

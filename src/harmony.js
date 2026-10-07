@@ -9,6 +9,8 @@ import { createPart as realCreatePart, writeChords as realWriteChords } from './
 import { parseProgression, parseChord } from './theory/chords.js';
 import { noteName } from './theory/notes.js';
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const EPS = 0.001;
 
 async function ensureStopped(call) {
@@ -78,8 +80,13 @@ export async function setChords(call, { bar, progression, barsPerChord = 1, repl
     const before = (await call('tracks', { events: false })).map((t) => t.name);
     const addRes = await call('addTrack', { type: 'instrument' });
     undoSteps += 1;
-    let fresh = Array.isArray(addRes?.added) ? addRes.added : null;
-    if (!fresh) fresh = (await call('tracks', { events: false })).map((t) => t.name).filter((n) => !before.includes(n));
+    // The bridge's own list can come back empty (seen live on 7.2.3: the new track shows up in the
+    // track list a moment later), so fall back to diffing names, retrying briefly.
+    let fresh = Array.isArray(addRes?.added) && addRes.added.length ? addRes.added : [];
+    for (let i = 0; !fresh.length && i < 10; i++) {
+      if (i) await sleep(200);
+      fresh = (await call('tracks', { events: false })).map((t) => t.name).filter((n) => !before.includes(n));
+    }
     if (fresh.length !== 1) {
       throw new Error(`a new track was added but could not be identified as the scratch track${fresh.length ? ` (candidates: ${fresh.join(', ')})` : ''}: remove it by hand`);
     }

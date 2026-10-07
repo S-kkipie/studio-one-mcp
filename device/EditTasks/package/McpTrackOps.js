@@ -51,6 +51,16 @@ function mtoTrack(context, name) {
 function mtoGlobalTrack(context, name) {
 	var all = mtoAllTracks(context);
 	for (var i = 0; i < all.length; i++) if (all[i].name === name && mtoFn(all[i], "createIterator")) return all[i];
+	// Global track names follow the UI language ("Pista de macadores" in the Spanish 7.2.3), so the
+	// marker track is also recognised by its events: it always holds the start/end markers, and only
+	// marker events carry a numeric markerType.
+	if (name === "Marker Track") {
+		for (var j = 0; j < all.length; j++) {
+			if (all[j].mediaType || !mtoFn(all[j], "createIterator")) continue;
+			var it = all[j].createIterator(), ev = it && mtoFn(it, "next") ? it.next() : null;
+			if (ev && typeof ev.markerType === "number") return all[j];
+		}
+	}
 	return null;
 }
 
