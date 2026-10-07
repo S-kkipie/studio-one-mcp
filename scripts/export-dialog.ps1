@@ -84,30 +84,29 @@ try {
   # 2. Press OK (Enter) on that dialog.
   [S1McpExport]::Press($dlg, $VK_RETURN)
 
-  # 3. Watch: the dialog must go away; a new alert after that is Studio One refusing.
+  # 3a. The dialog must close (up to 5 s); otherwise cancel it.
   $sw = [Diagnostics.Stopwatch]::StartNew()
-  $gone = $false
+  while ($sw.ElapsedMilliseconds -lt 5000 -and [S1McpExport]::Shown($dlg)) { Start-Sleep -Milliseconds 100 }
+  if ([S1McpExport]::Shown($dlg)) {
+    [S1McpExport]::Press($dlg, $VK_ESCAPE)
+    Emit @{ ok = $false; reason = 'dialog did not accept OK'; title = $title }
+    exit 0
+  }
+
+  # 3b. Fresh timer: a new alert after the dialog closed is Studio One refusing (Escape, never Enter).
+  $sw = [Diagnostics.Stopwatch]::StartNew()
   while ($sw.ElapsedMilliseconds -lt $watchMs) {
-    if (-not $gone -and -not [S1McpExport]::Shown($dlg)) { $gone = $true }
-    if ($gone) {
-      foreach ($h in [S1McpExport]::Windows($target)) {
-        if ($h -eq $dlg -or -not (IsNew $h)) { continue }
-        $c = [S1McpExport]::Cls($h)
-        if ($c -eq 'CCLDialogClass' -or $c -eq '#32770') {
-          $at = [S1McpExport]::Title($h)
-          [S1McpExport]::Press($h, $VK_ESCAPE)
-          Emit @{ ok = $false; reason = 'alert'; title = $at }
-          exit 0
-        }
+    foreach ($h in [S1McpExport]::Windows($target)) {
+      if ($h -eq $dlg -or -not (IsNew $h)) { continue }
+      $c = [S1McpExport]::Cls($h)
+      if ($c -eq 'CCLDialogClass' -or $c -eq '#32770') {
+        $at = [S1McpExport]::Title($h)
+        [S1McpExport]::Press($h, $VK_ESCAPE)
+        Emit @{ ok = $false; reason = 'alert'; title = $at }
+        exit 0
       }
     }
     Start-Sleep -Milliseconds 100
-  }
-  if (-not $gone) {
-    # Still open: cancel it rather than leave Studio One stuck on our dialog.
-    [S1McpExport]::Press($dlg, $VK_ESCAPE)
-    Emit @{ ok = $false; reason = 'dialog did not close'; title = $title }
-    exit 0
   }
   Emit @{ ok = $true }
   exit 0

@@ -43,3 +43,14 @@ test('windowsSnapshot parses windows; off Windows rejects', async () => {
   await assert.rejects(windowsSnapshot(5, { platform: 'darwin' }), /Windows only/);
   await assert.rejects(driveExportDialog({ pid: 5 }, { platform: 'darwin' }), /Windows only/);
 });
+
+test('final result ignores snapshot lines; aborted run', async () => {
+  const run = async () => ({ stdout: '{"ok":true}\n{"windows":["A"]}\n', aborted: false });
+  assert.deepEqual(await driveExportDialog({ pid: 1 }, { run, platform: 'win32' }), { ok: true });
+  const ab = async () => ({ stdout: '{"ok":true}', aborted: true });
+  assert.deepEqual(await driveExportDialog({ pid: 1 }, { run: ab, platform: 'win32' }), { ok: false, reason: 'aborted' });
+});
+
+test('script has the two-phase wait', () => {
+  assert.ok(script.includes('dialog did not accept OK') && script.includes('5000'));
+});

@@ -20,13 +20,20 @@ function defaultReader(songFile) {
 }
 
 const unescapeXml = (s) => s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-const stripSep = (p) => (p.length > 1 ? p.replace(/[\\/]+$/, '') || p : p);
+const stripSep = (p) => {
+  const root = path.parse(p).root;
+  if (p === root) return p;
+  const t = p.replace(/[\\/]+$/, '');
+  return t.length < root.length ? root : t;
+};
 
 function settingsFolder(xml, section) {
   if (!xml) return null;
-  const m = new RegExp(`<Section\\s+path="${section}"[^>]*>([\\s\\S]*?)</Section>`).exec(xml);
-  if (!m) return null;
-  const u = /\burl="(file:\/\/\/[^"]*)"/.exec(m[1]);
+  const m = new RegExp(`<Section\\s+path="${section}"[^>]*>`).exec(xml);
+  if (!m || m[0].endsWith('/>')) return null;
+  const rest = xml.slice(m.index + m[0].length);
+  const next = rest.indexOf('<Section');
+  const u = /\burl="(file:\/\/\/[^"]*)"/.exec(next < 0 ? rest : rest.slice(0, next));
   if (!u) return null;
   try {
     return stripSep(fileURLToPath(unescapeXml(u[1])));
@@ -88,6 +95,11 @@ function freeName(fsx, dest) {
   }
 }
 
+const samePath = (a, b) => {
+  const x = path.resolve(a), y = path.resolve(b);
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+};
+
 function move(fsx, from, to) {
   try {
     fsx.renameSync(from, to);
@@ -107,13 +119,16 @@ export function moveFiles(files, output, { kind, fs: fsx = fs } = {}) {
       throw new Error(`output is a file path but the export wrote ${files.length} files; give a folder`);
     }
     fsx.mkdirSync(path.dirname(output), { recursive: true });
+    if (samePath(files[0], output)) return [files[0]];
     const dest = freeName(fsx, output);
     move(fsx, files[0], dest);
     return [dest];
   }
   fsx.mkdirSync(output, { recursive: true });
   return files.map((f) => {
-    const dest = freeName(fsx, path.join(output, path.basename(f)));
+    const want = path.join(output, path.basename(f));
+    if (samePath(f, want)) return f;
+    const dest = freeName(fsx, want);
     move(fsx, f, dest);
     return dest;
   });

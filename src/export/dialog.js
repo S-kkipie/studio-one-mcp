@@ -17,7 +17,7 @@ function parseLines(stdout) {
     if (!s.startsWith('{')) continue;
     try { lines.push(JSON.parse(s)); } catch { /* ignore */ }
   }
-  return { events: lines.filter((l) => l.event), final: lines.filter((l) => !l.event).pop() ?? null };
+  return { events: lines.filter((l) => l.event), final: lines.filter((l) => !l.event && !('windows' in l)).pop() ?? null };
 }
 
 async function exec(run, env, timeout) {
@@ -42,7 +42,9 @@ export async function driveExportDialog({ pid, before = [], timeoutMs = 15000, w
     S1MCP_XD_MODE: 'drive', S1MCP_XD_PID: String(pid), S1MCP_XD_BEFORE: before.join(','),
     S1MCP_XD_TIMEOUT_MS: String(timeoutMs), S1MCP_XD_WATCH_MS: String(watchMs),
   };
-  const stdout = await exec(run, env, timeoutMs + watchMs + 10000);
+  const r = await run('powershell.exe', PS_ARGS, { env: { ...process.env, ...env }, timeout: timeoutMs + watchMs + 10000 });
+  if (r && typeof r === 'object' && r.aborted) return { ok: false, reason: 'aborted' };
+  const stdout = typeof r === 'string' ? r : r.stdout;
   const { events, final } = parseLines(stdout);
   if (!final) return { ok: false, reason: 'no result from the dialog helper' };
   const d = events.find((e) => e.event === 'dialog');

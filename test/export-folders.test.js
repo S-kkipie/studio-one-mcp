@@ -78,3 +78,25 @@ test('checkOutput', () => {
   checkOutput('/o/folder', 'stems', ['wav']);
   checkOutput('/o/folder', 'mixdown', ['wav', 'mp3']);
 });
+
+test('moveFiles keeps a file already at its destination in place', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xi-'));
+  const f = path.join(d, 'a.wav');
+  fs.writeFileSync(f, 'a');
+  assert.deepEqual(moveFiles([f], d, { kind: 'mixdown' }), [f]);
+  assert.deepEqual(moveFiles([f], f, { kind: 'mixdown' }), [f]);
+  assert.deepEqual(fs.readdirSync(d), ['a.wav']);
+  fs.rmSync(d, { recursive: true });
+});
+
+test('settings parsing: self-closing sections, section boundary, drive roots', () => {
+  const dir = path.join(os.tmpdir(), 'zz');
+  const sc = `<Section path="SongRenderer"/><Section path="Other"><Url url="${url(dir)}"/></Section>`;
+  assert.deepEqual(exportFolders(song, 'mixdown', { readSettingsXml: () => sc }), [dflt('Mixdown')]);
+  const empty = `<Section path="SongRenderer"><Attributes/></Section><Section path="Other"><Url url="${url(dir)}"/></Section>`;
+  assert.deepEqual(exportFolders(song, 'mixdown', { readSettingsXml: () => empty }), [dflt('Mixdown')]);
+  if (process.platform === 'win32') {
+    const root = `<Section path="SongRenderer"><Url url="file:///C:/"/></Section>`;
+    assert.equal(exportFolders(song, 'mixdown', { readSettingsXml: () => root })[0], 'C:\');
+  }
+});
