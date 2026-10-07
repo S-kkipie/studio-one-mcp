@@ -50,3 +50,15 @@ test('searchCatalog labels backends and handles scan errors', () => {
   assert.equal(r[2].scanError, 'boom');
   assert.equal(searchCatalog(c, '').length, 5);
 });
+
+test('matchPlugin rejects loose prefixes', () => {
+  assert.equal(matchPlugin(cat(entry('Archetype'), entry('Archetype Petrucci X')), 'Archetype Gojira 2'), null);
+  assert.equal(matchPlugin(cat(entry('Pro')), 'Program Thing'), null);
+  assert.equal(matchPlugin(cat(entry('Pro')), 'Pro-Q 3'), null);
+});
+
+test('matchPlugin prefers exact name even when it ends in a number', () => {
+  const c = cat(entry('Pro-Q 3'), entry('Pro-Q'));
+  assert.equal(matchPlugin(c, 'Pro-Q 3').name, 'Pro-Q 3');
+  assert.equal(matchPlugin(c, 'Pro-Q 3 2').name, 'Pro-Q 3');
+});

@@ -16,13 +16,18 @@ export function loadCatalog(dir) {
 }
 
 export function matchPlugin(catalog, studioOneName) {
-  const base = String(studioOneName ?? '').trim().replace(/\s+\d+$/, '').toLowerCase();
-  if (!base) return null;
+  const raw = String(studioOneName ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  const exact = (q) => { for (const [name, entry] of catalog) if (name.toLowerCase() === q) return entry; return null; };
+  const hit = exact(raw);
+  if (hit) return hit;
+  const base = raw.replace(/\s+\d+$/, '');
+  const hit2 = exact(base);
+  if (hit2) return hit2;
   let best = null;
   for (const [name, entry] of catalog) {
     const n = name.toLowerCase();
-    if (n === base) return entry;
-    if (base.startsWith(n) && (!best || n.length > best.name.length)) best = { name: n, entry };
+    if (base.startsWith(n) && /^\s*(\(.*\)|\d+)?$/.test(base.slice(n.length)) && (!best || n.length > best.n.length)) best = { n, entry };
   }
   return best ? best.entry : null;
 }
