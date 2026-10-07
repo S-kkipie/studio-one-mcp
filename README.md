@@ -45,7 +45,7 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_add_instrument_track` | Add an instrument track with a new instance of an instrument by name (Mai Tai, Presence…). One undo removes both. |
 | `live_create_part` | Create an empty instrument part on an instrument track from a bar for N bars (4/4), restoring the loop range and selection; one undo removes it. |
 | `live_write_notes` | Write notes (MIDI numbers or names like `C3`, middle C = C3) on an instrument track from a bar, making a part to cover them if there is none; one undo per call. |
-| `live_write_chords` | Write a chord progression like `Cm7 | Ab | Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; one undo per call. |
+| `live_write_chords` | Write a chord progression like `Cm7 \| Ab \| Eb Bb` with voicing (close, open, drop2) and rhythm (sustain, quarters, eighths, arpeggios) from a bar; one undo per call. |
 | `live_write_drums` | Write a drum pattern from one `x`/`X`/`.` string per General MIDI lane (kick, snare, hat...) from a bar, repeated for N bars; one undo per call. |
 | `live_inserts` / `live_bypass_insert` | Plug-ins on each channel (slot, name, bypassed), and bypass one slot or the whole rack. |
 | `live_sends` / `live_set_send` | Each channel's sends (destination name, level 0..1 and in dB, mute), and set a level or mute. |
