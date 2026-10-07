@@ -177,4 +177,7 @@ test('plug-in tools take an insert (channel + slot) or an instrument, exactly on
   }
   const win = await call('live_plugin_window', { action: 'open' });
   assert.match(win.text, /open needs channel and slot, or instrument/);
+  const close = await call('live_plugin_window', { action: 'closeAll', channel: 'X', instrument: 'Mai Tai' });
+  assert.equal(close.isError, true);
+  assert.match(close.text, /channel .* or instrument .* not both/);
 });

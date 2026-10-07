@@ -33,7 +33,7 @@ import { version } from './version.js';
 import { defaultCatalogDir } from './plugins/scan.js';
 import { loadCatalog, matchPlugin, searchCatalog, entryBackend, stateScaleOf, CATALOG_SCHEMA } from './plugins/catalog.js';
 import { getParams, setParams, pluginPresets, addPluginWithPreset, removePlugin, runScan, pluginTarget, instrumentsOverview } from './plugins/controller.js';
-import { focusPlugin, closePluginWindows } from './plugins/windows.js';
+import { focusPlugin, closeEditors } from './plugins/windows.js';
 
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
 const fail = (message) => ({ content: [{ type: 'text', text: message }], isError: true });
@@ -665,16 +665,16 @@ server.tool(
 
 server.tool(
   'live_plugin_window',
-  'Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close all insert plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only, and for insert windows only. Track edits are refused while an instrument editor is open, and closeAll does not close it: the user must close it in Studio One.',
+  "Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close plug-in editor windows: closeAll closes every insert window and instrument editor, only one channel's insert windows with channel, or only one instrument's editor with instrument. Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own (instrument editors included); closeAll is for tidying up. Closing works on Windows only.",
   { action: z.enum(['open', 'closeAll']), channel: TARGET.channel, slot: TARGET.slot, instrument: TARGET.instrument },
   guard(async ({ action, channel, slot, instrument }) => {
     if (action === 'open') {
       if (instrument === undefined && (channel === undefined || slot === undefined)) throw new Error('open needs channel and slot, or instrument');
       return focusPlugin(call, pluginTarget({ channel, slot, instrument }));
     }
-    if (instrument !== undefined) throw new Error('closeAll closes insert windows only (optionally of one channel)');
+    if (instrument !== undefined && channel !== undefined) throw new Error('closeAll takes channel (its insert windows) or instrument (its editor), not both');
     if (process.platform !== 'win32') return { closed: [], note: 'closing plug-in windows is only supported on Windows' };
-    return { closed: await closePluginWindows({ channel }) };
+    return { closed: await closeEditors(call, { channel, instrument }) };
   }),
 );
 

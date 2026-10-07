@@ -4,7 +4,7 @@
 //  - Remove Track is one undo step and asked nothing for an empty track;
 //  - Track/Group Selected Tracks opens a name dialog, so grouping is not offered.
 
-import { closePluginWindows } from './plugins/windows.js';
+import { closeEditors } from './plugins/windows.js';
 
 const hex = (rgb) => `#${(rgb & 0xffffff).toString(16).padStart(6, '0')}`;
 export const toArgb = (color) => {
@@ -62,7 +62,7 @@ async function trackTaskOnce(call, op, timeoutMs) {
 // disables Track Edit tasks while a plug-in window is open or focused: then the plug-in windows are
 // closed once and the operation is tried again. `timeoutMs` overrides the bridge's 5 s answer time
 // (inserting or removing a plug-in instance can take longer).
-export async function trackTask(call, op, { closeWindows = closePluginWindows, timeoutMs } = {}) {
+export async function trackTask(call, op, { closeWindows = () => closeEditors(call), timeoutMs } = {}) {
   try {
     return await trackTaskOnce(call, op, timeoutMs);
   } catch (e) {

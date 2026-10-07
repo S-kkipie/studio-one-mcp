@@ -10,8 +10,10 @@ export async function focusPlugin(call, { channel, slot, instrument }) {
 
 // Only plug-in editor windows get WM_CLOSE: visible top-level windows of the Studio One process
 // titled "<channel> · Inserts · <n> - <plug-in>" (the only kind seen, 7.2.3), optionally only
-// those of one channel ($want, set by windowsScript). Other windows (Console, Browser, Preferences,
-// export / progress dialogs, where WM_CLOSE means Cancel) are left alone. Prints the closed titles.
+// those of one channel ($want, set by windowsScript), and instrument editors, whose title is exactly
+// one of $editors ("<n> - <instrument>", n = the InstNN number: "1 - Mai Tai", seen live in 7.2.3).
+// Other windows (Console, Browser, Preferences, export / progress dialogs, where WM_CLOSE means
+// Cancel) are left alone. Prints the closed titles.
 export const WINDOWS_SCRIPT = `[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $mark = " " + [char]0x00B7 + " Inserts " + [char]0x00B7 + " "
 Add-Type @"
@@ -35,7 +37,7 @@ public static class S1McpWindows {
 foreach ($p in Get-Process "Studio One" -ErrorAction SilentlyContinue) {
   foreach ($w in [S1McpWindows]::List($p.Id)) {
     $i = $w.Value.IndexOf($mark)
-    if ($i -gt 0 -and ($want -eq "" -or $w.Value.Substring(0, $i) -eq $want)) {
+    if (($i -gt 0 -and $wantInserts -and ($want -eq "" -or $w.Value.Substring(0, $i) -eq $want)) -or ($editors -ccontains $w.Value)) {
       [void][S1McpWindows]::PostMessage($w.Key, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
       $w.Value
     }
@@ -43,9 +45,17 @@ foreach ($p in Get-Process "Studio One" -ErrorAction SilentlyContinue) {
 }
 `;
 
-// The script with the channel filter ("" = every channel) in front, as a PowerShell literal.
-export function windowsScript(channel = '') {
-  return `$want = '${String(channel).replace(/'/g, "''")}'\n${WINDOWS_SCRIPT}`;
+const psLiteral = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+// The script with its filters in front, as PowerShell literals: the channel ("" = every channel),
+// whether insert windows are closed at all, and the exact instrument editor titles to close.
+export function windowsScript(channel = '', { inserts = true, editors = [] } = {}) {
+  return `$want = ${psLiteral(channel)}\n$wantInserts = $${inserts ? 'true' : 'false'}\n$editors = @(${editors.map(psLiteral).join(', ')})\n${WINDOWS_SCRIPT}`;
+}
+
+// The title of an instrument's editor window: "<n> - <name>" (Inst01 "Mai Tai" -> "1 - Mai Tai").
+export function instrumentEditorTitle({ index, name }) {
+  return Number.isInteger(index) && typeof name === 'string' && name !== '' ? `${index} - ${name}` : null;
 }
 
 const runFile = (cmd, args) => new Promise((resolve, reject) => {
@@ -57,10 +67,11 @@ const runFile = (cmd, args) => new Promise((resolve, reject) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// -> titles of the windows that were sent WM_CLOSE ([] off Windows).
-export async function closePluginWindows({ channel, platform = process.platform, run = runFile, settleMs = 500 } = {}) {
+// -> titles of the windows that were sent WM_CLOSE ([] off Windows). `editors`: exact instrument
+// editor titles to close as well; `inserts: false` leaves insert windows alone.
+export async function closePluginWindows({ channel, editors = [], inserts = true, platform = process.platform, run = runFile, settleMs = 500 } = {}) {
   if (platform !== 'win32') return [];
-  const encoded = Buffer.from(windowsScript(channel || ''), 'utf16le').toString('base64');
+  const encoded = Buffer.from(windowsScript(channel || '', { inserts, editors }), 'utf16le').toString('base64');
   let out;
   try {
     out = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded]);
@@ -70,4 +81,24 @@ export async function closePluginWindows({ channel, platform = process.platform,
   const titles = String(out).split(/\r?\n/).map((s) => s.replace(/^﻿/, '').trim()).filter(Boolean);
   if (titles.length && settleMs) await sleep(settleMs);
   return titles;
+}
+
+// Insert windows (all, or one channel's) plus instrument editors (all of them when no channel is
+// given, or only `instrument`'s: its component name or exact title, and then no insert window).
+// Instrument editors are told apart by their exact title, so the song's instruments are read first;
+// if that read fails (no instrument given), insert windows are still closed.
+export async function closeEditors(call, { channel, instrument, ...opts } = {}) {
+  let editors = [];
+  if (channel === undefined) {
+    let list = [];
+    if (instrument !== undefined) {
+      const all = (await call('instruments', {})) ?? [];
+      list = all.filter((x) => x.component === instrument || x.name === instrument);
+      if (!list.length) throw new Error(`no instrument named ${instrument} (have: ${all.map((x) => `${x.component} (${x.name})`).join(', ') || 'none'})`);
+    } else {
+      try { list = (await call('instruments', {})) ?? []; } catch { list = []; }
+    }
+    editors = list.map(instrumentEditorTitle).filter(Boolean);
+  }
+  return closePluginWindows({ ...opts, channel, editors, inserts: instrument === undefined });
 }
