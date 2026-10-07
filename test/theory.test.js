@@ -28,6 +28,8 @@ test('parseChord: qualities, flats, slash bass, unknown symbol', () => {
     assert.deepEqual(parseChord(s).intervals, iv, s);
   }
   assert.throws(() => parseChord('Cfoo'), /unknown chord symbol "Cfoo"/);
+  assert.throws(() => parseChord('Cconstructor'), /unknown chord symbol "Cconstructor"/);
+  assert.throws(() => parseChord('CtoString'), /unknown chord symbol "CtoString"/);
 });
 
 test('parseProgression: bars with |, several chords split a bar, no bars = one chord per bar', () => {

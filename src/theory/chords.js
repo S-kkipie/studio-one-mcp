@@ -16,7 +16,7 @@ const QUALITIES = {
 export function parseChord(symbol) {
   const s = String(symbol).trim();
   const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(s);
-  const intervals = m ? QUALITIES[m[2]] : undefined;
+  const intervals = m && Object.hasOwn(QUALITIES, m[2]) ? QUALITIES[m[2]] : undefined;
   if (!intervals) throw new Error(`unknown chord symbol "${s}" (e.g. C, Cm, C7, Cmaj7, Cm7, Cm7b5, Cdim7, Csus4, Cadd9, C/E)`);
   return { symbol: s, root: pitchClass(m[1]), intervals: [...intervals], bass: m[3] ? pitchClass(m[3]) : null };
 }
