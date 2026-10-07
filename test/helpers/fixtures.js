@@ -121,11 +121,22 @@ export const KEYS_NOTES = [
   { start: 12.5, pitch: 67, noteId: 3, length: 0.5, velocity: 0.5 }, // after the part's end: hidden
 ];
 
-export function writeSong(path, { title = 'Fixture Song', extras = false } = {}) {
+// Chord track (Cm at 0, G at beat 4) and key signature map, as Studio One 7 writes them.
+const chordTrack = `
+      <ChordTrack version="1" timeFormat="2" followEnabled="1"><Attributes x:id="attributes" height="28"/>
+        <ChordEvent timeFormat="2" length="4"><Attributes x:id="chord" root="0" intervals="FF 0 0 FF 0 0 0 FF 0 0 0 0" type="1"/></ChordEvent>
+        <ChordEvent timeFormat="2" start="4" length="4"><Attributes x:id="chord" root="1" intervals="FF 0 0 0 FF 0 0 FF 0 0 0 0" type="1"/></ChordEvent>
+        <UID x:id="channelID" uid="{CH-CHORD}"/>
+      </ChordTrack>`;
+const keySigMap = '<KeySignatureMap x:id="keySignatureMap"><Attributes root="0" scale="" start="0" anchor="1"/></KeySignatureMap>';
+
+export function writeSong(path, { title = 'Fixture Song', extras = false, harmony = false } = {}) {
   mkdirSync(dirname(path), { recursive: true });
   const files = {
     'metainfo.xml': strToU8(metaXml.replace('Fixture Song', title)),
-    'Song/song.xml': strToU8(extras ? songXml.replace('<ArrangerTrack', `${keysTrack}\n      <ArrangerTrack`) : songXml),
+    'Song/song.xml': strToU8(harmony ? songXml.replace('<ArrangerTrack', `${chordTrack}
+      <ArrangerTrack`).replace('<List x:id="Tracks">', `${keySigMap}
+    <List x:id="Tracks">`) : extras ? songXml.replace('<ArrangerTrack', `${keysTrack}\n      <ArrangerTrack`) : songXml),
     'Song/mediapool.xml': strToU8(extras ? mediaXml.replace('</MediaFolder></Attributes>', `</MediaFolder>${keysClip}</Attributes>`) : mediaXml),
     'Devices/audiomixer.xml': strToU8(extras
       ? mixerXml

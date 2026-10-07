@@ -86,3 +86,18 @@ test('insert settings from the saved preset; automation mode and envelopes with 
   assert.deepEqual(sum.automation, ['Vox/Volume: 2 points']);
   assert.equal(sum.tracks.find((t) => t.name === 'Vox').automation, 'read');
 });
+
+test('chord track and key signatures from the saved song', () => {
+  const s = readSong(fixture({ harmony: true }));
+  assert.deepEqual(s.chords.map((c) => [c.chord, c.startBeat, c.lengthBeats, c.bar]), [['Cm', 0, 4, 1], ['G', 4, 4, 2]]);
+  assert.deepEqual(s.keySignatures, [{ root: 'C', scale: '', startBeat: 0 }]);
+  assert.ok(!s.tracks.some((t) => t.type === 'ChordTrack'));
+  const sum = summarizeSong(s);
+  assert.deepEqual(sum.chords, ['Cm @ bar 1', 'G @ bar 2']);
+  assert.deepEqual(sum.keySignatures, s.keySignatures);
+});
+
+test('no chord track gives empty chords and key signatures', () => {
+  const s = readSong(fixture());
+  assert.deepEqual([s.chords, s.keySignatures], [[], []]);
+});

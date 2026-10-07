@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { parseXml, kids, child, byXid, walk, num } from './xml.js';
 import { decodeUbjson } from './ubjson.js';
+import { NOTE_NAMES, fifthsToPitchClass, parseIntervalsMask, chordName } from './theory/chordnames.js';
 
 const round = (n, d = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : n);
 
@@ -220,6 +221,40 @@ function readTrack(tr, t, media) {
   return base;
 }
 
+// ---- harmony ----------------------------------------------------------------
+
+// Chord track events: <ChordEvent start length><Attributes x:id="chord" root intervals/></ChordEvent>.
+export function readChords(chordTrack, t) {
+  return kids(chordTrack, 'ChordEvent')
+    .map((ev) => {
+      const a = byXid(ev, 'chord');
+      if (!a) return null;
+      const startBeat = num(ev.attrs.start);
+      const rootPc = fifthsToPitchClass(num(a.attrs.root));
+      return {
+        chord: chordName(rootPc, parseIntervalsMask(a.attrs.intervals)),
+        startBeat: round(startBeat),
+        lengthBeats: round(num(ev.attrs.length)),
+        bar: t.at(startBeat).bar,
+      };
+    })
+    .filter(Boolean)
+    .sort((x, y) => x.startBeat - y.startBeat);
+}
+
+// <KeySignatureMap x:id="keySignatureMap"><Attributes root scale start anchor/></KeySignatureMap>
+export function readKeySignatures(songRoot) {
+  for (const n of walk(songRoot)) {
+    if (n.attrs['x:id'] !== 'keySignatureMap') continue;
+    return kids(n, 'Attributes').map((k) => ({
+      root: NOTE_NAMES[fifthsToPitchClass(num(k.attrs.root))],
+      scale: k.attrs.scale || '',
+      startBeat: round(num(k.attrs.start)),
+    }));
+  }
+  return [];
+}
+
 // ---- mixer ------------------------------------------------------------------
 
 const toDb = (g) => (g > 0 ? round(20 * Math.log10(g), 2) : -Infinity);
@@ -358,6 +393,7 @@ export function readSong(path) {
   const tracks = kids(byXid(root, 'Tracks')).map((tr) => readTrack(tr, t, media));
   const markerTrack = tracks.find((tr) => tr.type === 'MarkerTrack');
   const arranger = tracks.find((tr) => tr.type === 'ArrangerTrack');
+  const chordTrackNode = kids(byXid(root, 'Tracks'), 'ChordTrack')[0];
   const mixer = readMixer(zip.xml('Devices/audiomixer.xml'), zip);
   const byChannel = new Map(mixer.map((c) => [c.id, c]));
 
@@ -380,9 +416,11 @@ export function readSong(path) {
         }
       : null,
     markers: (markerTrack?.events || []).map((e) => ({ name: e.name, ...e.start })),
+    chords: chordTrackNode ? readChords(chordTrackNode, t) : [],
+    keySignatures: readKeySignatures(root),
     sections: (arranger?.events || []).map((e) => ({ name: e.name, start: e.start, lengthBeats: e.lengthBeats })),
     tracks: tracks
-      .filter((tr) => tr !== markerTrack && tr !== arranger)
+      .filter((tr) => tr !== markerTrack && tr !== arranger && tr.type !== 'ChordTrack')
       .map((tr) => {
         const ch = byChannel.get(tr.channelId);
         return ch ? { ...tr, mixer: { volumeDb: ch.volumeDb, pan: ch.pan, mute: ch.mute, solo: ch.solo, output: ch.output, automation: ch.automation, inserts: ch.inserts } } : tr;
@@ -411,6 +449,8 @@ export function summarizeSong(s) {
     lengthSeconds: s.lengthSeconds,
     markers: s.markers.map((m) => `${m.name} @ bar ${m.bar}`),
     sections: s.sections.map((x) => `${x.name} @ bar ${x.start.bar}`),
+    chords: s.chords.slice(0, 64).map((c) => `${c.chord} @ bar ${c.bar}`),
+    keySignatures: s.keySignatures,
     tracks: s.tracks.map((tr) => ({
       name: tr.name,
       type: tr.mediaType || tr.type,
