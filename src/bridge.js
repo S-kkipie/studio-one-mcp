@@ -46,8 +46,13 @@ export async function placeRequest(tmp, dest, { rename = renameSync, waitMs = 50
 let queue = Promise.resolve();
 
 // One request in flight at a time: the mailbox has a single slot.
-export function call(op, args = {}, { timeoutMs = 5000, dir = mailboxDir, nudge = midiNudge } = {}) {
+// onSent: called once this call's request has been placed in the mailbox (after the calls queued
+// before it). signal: an abort stops waiting for the answer (or drops the call while it is still
+// queued) and rejects; the queue moves on, and a later request replaces this one in the mailbox.
+export function call(op, args = {}, { timeoutMs = 5000, dir = mailboxDir, nudge = midiNudge, onSent, signal } = {}) {
+  const aborted = () => new Error(`"${op}" was abandoned before Studio One answered`);
   const run = async () => {
+    if (signal?.aborted) throw aborted();
     const status = bridgeStatus(dir);
     if (!status.loaded) throw new Error(`Studio One bridge not loaded: ${status.reason}`);
     mkdirSync(dir, { recursive: true });
@@ -55,9 +60,13 @@ export function call(op, args = {}, { timeoutMs = 5000, dir = mailboxDir, nudge 
     const tmp = join(dir, `request.${id}.tmp`);
     writeFileSync(tmp, JSON.stringify({ id, op, args }) + '\n');
     await placeRequest(tmp, join(dir, 'request.json'), { waitMs: timeoutMs });
+    if (onSent) {
+      try { onSent(); } catch { /* the caller's hook must not break the call */ }
+    }
     const deadline = Date.now() + timeoutMs;
     let lastNudge = 0;
     while (Date.now() < deadline) {
+      if (signal?.aborted) throw aborted();
       if (Date.now() - lastNudge >= RENUDGE_MS) {
         nudge();
         lastNudge = Date.now();

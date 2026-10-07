@@ -87,3 +87,39 @@ test('placeRequest retries a rename Windows refuses while Studio One holds reque
   await assert.rejects(placeRequest('a.tmp', 'request.json', { rename: locked(Infinity), waitMs: 0, sleep: async () => {} }), /EPERM/);
   await assert.rejects(placeRequest('a.tmp', 'request.json', { rename: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }, sleep: async () => assert.fail('no retry') }), /ENOENT/);
 });
+
+test('onSent fires once the request is in the mailbox, in queue order, before the answer', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 's1mb-'));
+  const log = [];
+  const stop = fakeDevice(dir, (op) => { log.push(`answer:${op}`); return op; });
+  try {
+    const opts = (name) => ({ dir, nudge: () => {}, onSent: () => {
+      log.push(`sent:${name}`);
+      assert.equal(JSON.parse(readFileSync(join(dir, 'request.json'), 'utf8')).op, name);
+    } });
+    const a = call('first', {}, opts('first')).then((r) => { log.push(`done:${r}`); });
+    const b = call('second', {}, opts('second')).then((r) => { log.push(`done:${r}`); });
+    await Promise.all([a, b]);
+    assert.deepEqual(log, ['sent:first', 'answer:first', 'done:first', 'sent:second', 'answer:second', 'done:second']);
+    // a throwing hook does not break the call
+    assert.equal(await call('third', {}, { dir, nudge: () => {}, onSent: () => { throw new Error('hook'); } }), 'third');
+  } finally {
+    stop();
+  }
+});
+
+test('signal: an abort stops waiting and frees the queue; a queued aborted call never sends', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 's1mb-'));
+  writeFileSync(join(dir, 'status.json'), JSON.stringify({ protocol: 1, heartbeat: 1 }));
+  const ac = new AbortController();
+  const t0 = Date.now();
+  const pending = call('slow', {}, { dir, timeoutMs: 60000, nudge: () => {}, signal: ac.signal });
+  let sent = false;
+  const dropped = call('dropped', {}, { dir, nudge: () => {}, signal: ac.signal, onSent: () => { sent = true; } });
+  setTimeout(() => ac.abort(), 100);
+  await assert.rejects(pending, /"slow" was abandoned/);
+  await assert.rejects(dropped, /"dropped" was abandoned/);
+  assert.equal(sent, false);
+  assert.ok(Date.now() - t0 < 5000);
+  await assert.rejects(call('next', {}, { dir, timeoutMs: 100, nudge: () => {} }), /did not answer "next"/);
+});

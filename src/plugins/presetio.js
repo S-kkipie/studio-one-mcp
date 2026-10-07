@@ -7,6 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { presetCommand } from './controller.js';
 import { fillFileDialog, snapshotDialogs, cancelPresetDialogs, MAX_PATH_CHARS } from './filedialog.js';
+import { withDialogLock } from '../dialoglock.js';
 
 // .instrument: what Studio One writes for an instrument's Export Preset (7.2.3, Mai Tai).
 export const PRESET_EXTS = ['.vstpreset', '.preset', '.fxpreset', '.instrument'];
@@ -19,14 +20,8 @@ const STALE_MS = 10 * 60 * 1000;
 
 export const defaultTmpDir = () => path.join(os.tmpdir(), 'studio-one-mcp');
 
-// One file dialog at a time. Separate from the controller's serialized() queue, so a caller that
-// already holds that queue cannot deadlock against this one.
-let dialogQueue = Promise.resolve();
-export function withDialogLock(fn) {
-  const p = dialogQueue.then(fn, fn);
-  dialogQueue = p.catch(() => {});
-  return p;
-}
+// One dialog flow at a time (shared with live_export): see ../dialoglock.js.
+export { withDialogLock };
 
 // Leftovers of a crashed run: files in our temp folder older than 10 minutes, once per folder.
 const swept = new Set();
