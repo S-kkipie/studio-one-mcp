@@ -9,6 +9,7 @@ import { openSongArchive } from '../song.js';
 export const AUDIO_EXTS = ['wav', 'aif', 'aiff', 'flac', 'caf', 'm4a', 'ogg', 'opus', 'mp3'];
 
 const extOf = (p) => path.extname(String(p)).slice(1).toLowerCase();
+const canonExt = (p) => { const e = extOf(p); return e === 'aiff' ? 'aif' : e; };
 const isAudioPath = (p) => AUDIO_EXTS.includes(extOf(p));
 
 function defaultReader(songFile) {
@@ -115,7 +116,7 @@ function move(fsx, from, to) {
 export function moveFiles(files, output, { kind, fs: fsx = fs } = {}) {
   const asFile = kind !== 'stems' && isAudioPath(output);
   if (asFile) {
-    if (files.length !== 1 || extOf(files[0]) !== extOf(output)) {
+    if (files.length !== 1 || canonExt(files[0]) !== canonExt(output)) {
       throw new Error(`output is a file path but the export wrote ${files.length} files; give a folder`);
     }
     fsx.mkdirSync(path.dirname(output), { recursive: true });
@@ -140,7 +141,7 @@ export function checkOutput(output, kind, formats) {
   if (kind === 'stems') throw new Error('stems need a folder for output');
   if (Array.isArray(formats)) {
     if (formats.length > 1) throw new Error('output is a file path but several formats were requested; give a folder');
-    if (formats.length === 1 && String(formats[0]).toLowerCase() !== extOf(output)) {
+    if (formats.length === 1 && String(formats[0]).toLowerCase() !== canonExt(output)) {
       throw new Error(`output extension .${extOf(output)} does not match the format ${formats[0]}`);
     }
   }

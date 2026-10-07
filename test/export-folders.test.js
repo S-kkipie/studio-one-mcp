@@ -74,6 +74,8 @@ test('checkOutput', () => {
   assert.throws(() => checkOutput('/o/x.wav', 'mixdown', ['wav', 'mp3']), /several formats/);
   assert.throws(() => checkOutput('/o/x.wav', 'mixdown', ['mp3']), /does not match/);
   checkOutput('/o/x.wav', 'mixdown', ['wav']);
+  checkOutput('/o/x.aiff', 'mixdown', ['aif']);
+  assert.throws(() => checkOutput('/o/x.aiff', 'mixdown', ['wav']), /does not match/);
   checkOutput('/o/x.wav', 'mixdown');
   checkOutput('/o/folder', 'stems', ['wav']);
   checkOutput('/o/folder', 'mixdown', ['wav', 'mp3']);

@@ -11,7 +11,7 @@ import { exportFolders, snapshotFolders, newFiles, moveFiles, checkOutput } from
 const RANGES = { loop: 0, song: 1, markers: 2 };
 const RANGE_NAMES = ['loop', 'song', 'markers'];
 const FORMATS = ['wav', 'aif', 'flac', 'caf', 'm4a', 'ogg', 'opus', 'mp3'];
-const ALIASES = { aiff: 'aif', wave: 'wav', vorbis: 'ogg', aac: 'm4a' };
+const ALIASES = { aiff: 'aif', vorbis: 'ogg' };
 
 async function findPid() {
   const run = promisify(execFile);
@@ -53,8 +53,9 @@ function validate(o) {
 export async function exportAudio(call, opts = {}, deps = {}) {
   const d = {
     windowsSnapshot, driveExportDialog, exportFolders, snapshotFolders, moveFiles,
-    studioOnePid: findPid, now: () => Date.now(), ...deps,
+    studioOnePid: findPid, now: () => Date.now(), platform: process.platform, ...deps,
   };
+  if (!deps.studioOnePid && d.platform !== 'win32') throw new Error("Exporting through Studio One's dialog is supported on Windows only");
   const { formats, timeoutS } = validate(opts);
   const { kind, output } = opts;
   const t0 = d.now();
@@ -85,19 +86,22 @@ export async function exportAudio(call, opts = {}, deps = {}) {
   const req = { kind, action: 'apply', options };
   if (opts.range !== undefined) req.range = RANGES[opts.range];
   if (formats) req.formats = formats;
-  const applied = await call('exportSettings', req);
-
+  let applied;
   let warning = null;
   try {
+    applied = await call('exportSettings', req);
     const cmd = call('command', { category: 'Song', name: kind === 'mixdown' ? 'Export Mixdown' : 'Export Stems' }, { timeoutMs: timeoutS * 1000 });
     cmd.catch(() => {}); // surfaced where it is awaited; avoids an unhandled rejection meanwhile
     const drive = d.driveExportDialog({ pid, before: winBefore });
     drive.catch(() => {});
     const r = await drive;
     if (!r.ok) {
-      await cmd.catch(() => {});
-      if (r.reason === 'no dialog') throw new Error('Studio One did not open the export dialog');
-      if (r.reason === 'alert') throw new Error(`Studio One refused the export ("${r.title}"): check the range (loop/markers) and formats`);
+      if (r.reason === 'no dialog') throw new Error('Studio One did not open the export dialog; if an export dialog appears, cancel it');
+      if (r.reason === 'alert') {
+        await cmd.catch(() => {});
+        throw new Error(`Studio One refused the export ("${r.title}"): check the range (loop/markers) and formats`);
+      }
+      if (r.reason === 'dialog did not accept OK') await cmd.catch(() => {});
       throw new Error(`export dialog: ${r.reason}`);
     }
     await cmd;

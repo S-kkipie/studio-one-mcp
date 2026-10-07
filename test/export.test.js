@@ -102,7 +102,7 @@ test('driver alert: refused, restore still called', async () => {
 
 test('driver no dialog and other reasons', async () => {
   let s = setup({ driver: async () => ({ ok: false, reason: 'no dialog' }) });
-  await assert.rejects(exportAudio(s.call, { kind: 'mixdown', range: 'song' }, s.deps), /did not open the export dialog/);
+  await assert.rejects(exportAudio(s.call, { kind: 'mixdown', range: 'song' }, s.deps), /did not open the export dialog; if an export dialog appears, cancel it/);
   s = setup({ driver: async () => ({ ok: false, reason: 'weird' }) });
   await assert.rejects(exportAudio(s.call, { kind: 'mixdown', range: 'song' }, s.deps), /export dialog: weird/);
 });
@@ -146,4 +146,36 @@ test('range omitted: current range 0 with empty loop is refused via a read-only 
   assert.deepEqual(names(s.calls), ['song', 'exportSettings:get']);
   const t = setup({ loop: [0, 0], currentRange: 1 });
   await exportAudio(t.call, { kind: 'mixdown' }, t.deps);
+});
+
+test('no dialog while the command never resolves: rejects promptly, restore ran', async () => {
+  const s = setup({ driver: async () => ({ ok: false, reason: 'no dialog' }) });
+  const inner = s.call;
+  const call = (op, a, o) => (op === 'command' ? (s.calls.push([op, a]), new Promise(() => {})) : inner(op, a, o));
+  await assert.rejects(exportAudio(call, { kind: 'mixdown', range: 'song' }, s.deps), /did not open the export dialog/);
+  assert.equal(names(s.calls).at(-1), 'exportSettings:restore');
+});
+
+test('apply rejects: restore still called, error propagated', async () => {
+  const s = setup();
+  const inner = s.call;
+  const call = async (op, a, o) => {
+    if (op === 'exportSettings' && a.action === 'apply') { s.calls.push([op, a]); throw new Error('apply broke'); }
+    return inner(op, a, o);
+  };
+  await assert.rejects(exportAudio(call, { kind: 'mixdown', range: 'song' }, s.deps), /apply broke/);
+  assert.equal(names(s.calls).at(-1), 'exportSettings:restore');
+});
+
+test('off Windows without an injected pid: refuses before any call', async () => {
+  const s = setup();
+  const { studioOnePid, ...deps } = s.deps;
+  await assert.rejects(exportAudio(s.call, { kind: 'mixdown', range: 'song' }, { ...deps, platform: 'linux' }), /supported on Windows only/);
+  assert.equal(s.calls.length, 0);
+});
+
+test('wave and aac are not aliases', async () => {
+  const s = setup();
+  await assert.rejects(exportAudio(s.call, { kind: 'mixdown', formats: ['wave'] }, s.deps), /unknown format/);
+  await assert.rejects(exportAudio(s.call, { kind: 'mixdown', formats: ['aac'] }, s.deps), /unknown format/);
 });
