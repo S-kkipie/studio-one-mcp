@@ -50,6 +50,8 @@ function scoreEntry(entry, rawQuery, foldedQuery, tokens) {
   return score;
 }
 
+const richness = (e) => ((e.args?.length || e.examples?.length) ? 1 : 0);
+
 export function searchCommands(catalog, query, { limit = 10 } = {}) {
   const rawQuery = String(query ?? '').trim();
   const foldedQuery = fold(rawQuery);
@@ -60,7 +62,7 @@ export function searchCommands(catalog, query, { limit = 10 } = {}) {
   return (catalog.commands ?? [])
     .map((e) => ({ e, score: scoreEntry(e, rawQuery, foldedQuery, tokens) }))
     .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score || a.e.command.length - b.e.command.length || (a.e.command < b.e.command ? -1 : a.e.command > b.e.command ? 1 : 0))
+    .sort((a, b) => b.score - a.score || richness(b.e) - richness(a.e) || a.e.command.length - b.e.command.length || (a.e.command < b.e.command ? -1 : a.e.command > b.e.command ? 1 : 0))
     .slice(0, limit)
     .map(({ e, score }) => ({ command: e.command, displayName: e.displayName, args: argSummary(e), score }));
 }

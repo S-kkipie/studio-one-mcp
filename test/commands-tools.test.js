@@ -81,3 +81,25 @@ test('runCommand check_only passes checkOnly: true', async () => {
   await runCommand(call, { command: 'Transport/Start', check_only: true }, opts);
   assert.equal(call.calls[0][1].checkOnly, true);
 });
+
+test('runCommand sends canonical casing and warns for commands not in the catalog', async () => {
+  const call = fakeCall({ executed: true });
+  await runCommand(call, { command: 'musical functions/transpose', args: { mode: 'Set all to' } }, opts);
+  assert.equal(call.calls[0][1].category, 'Musical Functions');
+  assert.equal(call.calls[0][1].name, 'Transpose');
+  const r = await runCommand(fakeCall({ executed: true }), { command: 'Nope/Thing', args: { A: 1 } }, opts);
+  assert.deepEqual(r.warnings, ['command not in the catalog: arguments not checked']);
+});
+
+test('with_state stops after the first failure; enabled checks use a short timeout', async () => {
+  let n = 0;
+  const seen = [];
+  const call = async (op, a, o) => { n++; seen.push(o); throw new Error('busy'); };
+  const r = await findCommand(call, { query: 'transpose start', with_state: true }, opts);
+  assert.equal(n, 1);
+  assert.deepEqual(seen[0], { timeoutMs: 1500 });
+  assert.ok(r.note);
+  assert.ok(r.results.every((x) => x.enabled === undefined));
+  const info = await commandInfo(call, { command: 'Transport/Start' }, opts);
+  assert.match(info.note, /could not ask Studio One/);
+});

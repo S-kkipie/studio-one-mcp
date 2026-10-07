@@ -9,6 +9,8 @@ import { readMacroExamples, macroDirs as defaultMacroDirs } from './macros.js';
 export const CATALOG_SCHEMA = 1;
 const MAX_AGE_MS = 24 * 3600e3;
 const MAX_VALUE_EXAMPLES = 5;
+const OUTDATED_WARNING = 'bridge device is outdated: run `studio-one-mcp setup` (or scripts/install-device.js) and restart Studio One for argument schemas';
+const REFRESH_FAILED_WARNING = 'refresh failed: Studio One did not answer; showing the cached catalog';
 const OFFLINE_WARNING = 'Studio One not running: catalog has only macro commands; it is rebuilt once Studio One answers';
 
 export function catalogFile() { return join(dataDir, 'commands', 'catalog.json'); }
@@ -21,6 +23,7 @@ function baseEntry(category, name, displayCategory, displayName) {
 
 function liveEntry(l, schemas) {
   const e = baseEntry(l.category, l.name, l.displayCategory ?? '', l.displayName ?? '');
+  if (!has(l, 'arguments')) { e.argsKnown = false; return e; }
   const decl = String(l.arguments ?? '').trim();
   if (decl === '...') {
     e.variableArgs = true;
@@ -35,6 +38,9 @@ function liveEntry(l, schemas) {
 
 export function mergeCatalog({ live, schemas, examples, install, warnings, now = Date.now() }) {
   const byCommand = new Map();
+  const outdated = !!live && live.length > 0 && live.every((l) => !has(l, 'arguments'));
+  const allWarnings = [...(warnings ?? [])];
+  if (outdated) allWarnings.push(OUTDATED_WARNING);
   if (live) for (const l of live) { if (!l || !l.category || !l.name) continue; const e = liveEntry(l, schemas ?? {}); byCommand.set(e.command, e); }
   const ex = examples ?? {};
   for (const [command, list] of Object.entries(ex)) {
@@ -57,7 +63,7 @@ export function mergeCatalog({ live, schemas, examples, install, warnings, now =
     }
   }
   const commands = [...byCommand.values()].sort((a, b) => (a.command < b.command ? -1 : a.command > b.command ? 1 : 0));
-  return { schema: CATALOG_SCHEMA, builtAt: new Date(now).toISOString(), install: install ?? null, live: !!live, warnings: [...(warnings ?? [])], commands };
+  return { schema: CATALOG_SCHEMA, builtAt: new Date(now).toISOString(), install: install ?? null, live: !!live, ...(live ? { detail: !outdated } : {}), warnings: allWarnings, commands };
 }
 
 export function findEntry(catalog, command) {
@@ -68,11 +74,28 @@ export function findEntry(catalog, command) {
   return list.find((e) => e.command.toLowerCase() === lower) ?? null;
 }
 
+const memo = new Map(); // file -> { key: "mtimeMs:size", cache }
+const inflight = new Map(); // file|refresh -> Promise
+
 function readCache(file) {
   try {
+    const st = fs.statSync(file);
+    const key = `${st.mtimeMs}:${st.size}`;
+    const m = memo.get(file);
+    if (m && m.key === key) return m.cache;
     const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return c && c.schema === CATALOG_SCHEMA && Array.isArray(c.commands) ? c : null;
-  } catch { return null; }
+    const cache = c && c.schema === CATALOG_SCHEMA && Array.isArray(c.commands) ? c : null;
+    memo.set(file, { key, cache });
+    return cache;
+  } catch { memo.delete(file); return null; }
+}
+
+// The newest Studio One install: "Studio One 7" beats "Studio One 6"; "Studio Pro 8" counts as 8.
+export function pickInstall(apps) {
+  const ver = (p) => { const m = [...String(p).matchAll(/Studio (?:One|Pro)\D*?(\d+)/g)]; return m.length ? Number(m[m.length - 1][1]) : 0; };
+  let best = null;
+  for (const a of apps ?? []) if (best === null || ver(a) > ver(best)) best = a;
+  return best;
 }
 
 function saveCatalog(file, catalog) {
@@ -90,14 +113,25 @@ async function fetchLive(call) {
   } catch { return null; }
 }
 
-export async function getCatalog(call, { refresh = false, now = Date.now(), file = catalogFile(), install = studioOneApps()[0] ?? null, macroDirs: dirs = defaultMacroDirs() } = {}) {
+export function getCatalog(call, opts = {}) {
+  const file = opts.file ?? catalogFile();
+  const k = `${file}|${opts.refresh ? 'r' : ''}`;
+  let p = inflight.get(k);
+  if (!p) {
+    p = buildCatalog(call, { ...opts, file }).finally(() => inflight.delete(k));
+    inflight.set(k, p);
+  }
+  return p;
+}
+
+async function buildCatalog(call, { refresh = false, now = Date.now(), file, install = pickInstall(studioOneApps()), macroDirs: dirs = defaultMacroDirs() } = {}) {
   const cache = readCache(file);
   const builtMs = cache ? Date.parse(cache.builtAt) : NaN;
-  const needsRebuild = !cache || refresh || cache.live === false || !(now - builtMs <= MAX_AGE_MS);
+  const needsRebuild = !cache || refresh || cache.live === false || cache.detail === false || !(now - builtMs <= MAX_AGE_MS);
   if (!needsRebuild) return cache;
 
   const live = await fetchLive(call);
-  if (!live && cache) return cache;
+  if (!live && cache) return refresh ? { ...cache, warnings: [...(cache.warnings ?? []), REFRESH_FAILED_WARNING], refreshFailed: true } : cache;
 
   const warnings = [];
   let schemas = {};
@@ -107,7 +141,9 @@ export async function getCatalog(call, { refresh = false, now = Date.now(), file
     warnings.push(...(r.warnings ?? []));
   }
   if (!live) warnings.push(OFFLINE_WARNING);
+  if (!live && refresh) warnings.push(REFRESH_FAILED_WARNING);
   const catalog = mergeCatalog({ live, schemas, examples: readMacroExamples(dirs), install, warnings, now });
+  if (!live && refresh) catalog.refreshFailed = true;
   try { saveCatalog(file, catalog); } catch (e) { catalog.warnings.push(`catalog cache not saved: ${e.message}`); }
   return catalog;
 }

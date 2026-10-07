@@ -59,3 +59,16 @@ test('preset labels from the dialog map to their values', () => {
   assert.deepEqual(normalizeArgs(Q, { Base: '1/16' }).flat, ['Base', 0.25]);
   assert.throws(() => normalizeArgs(Q, { Base: '1/7' }), /Base must be a number or one of: 1\/16, 1\/8/);
 });
+
+test('entry with unknown arguments (outdated device) passes args through with a warning', () => {
+  const r = normalizeArgs({ command: 'A/B', argsKnown: false, variableArgs: false, args: [] }, { X: 1 });
+  assert.deepEqual(r.flat, ['X', 1]);
+  assert.match(r.warnings[0], /not checked/);
+});
+
+test('variable-args entry with names only: unknown key warns and passes through', () => {
+  const r = normalizeArgs({ command: 'A/B', variableArgs: true, args: [{ name: 'Mode', type: 'unknown' }] }, { Mode: 1, Other: 2 });
+  assert.deepEqual(r.flat, ['Mode', 1, 'Other', 2]);
+  assert.equal(r.warnings.length, 1);
+  assert.throws(() => normalizeArgs(T, { Nope: 1 }), /unknown argument/);
+});

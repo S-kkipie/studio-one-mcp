@@ -65,3 +65,11 @@ test('every query word found somewhere adds a bonus (category + name)', () => {
   ] };
   assert.equal(searchCommands(c, 'agregar marcador con nombre')[0].command, 'Marker/Insert Named');
 });
+
+test('ties prefer commands that have arguments', () => {
+  const c = { commands: [
+    { command: 'A/Zap', category: 'A', name: 'Zap', displayCategory: '', displayName: '', args: [], examples: [] },
+    { command: 'B/Zap Longer', category: 'B', name: 'Zap', displayCategory: '', displayName: '', args: [{ name: 'X', type: 'int' }], examples: [] },
+  ] };
+  assert.equal(searchCommands(c, 'zap')[0].command, 'B/Zap Longer');
+});

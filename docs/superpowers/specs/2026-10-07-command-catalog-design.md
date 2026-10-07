@@ -53,7 +53,7 @@ src/commands/
   - This is a device change and needs a Studio One restart, as before.
   - If an older device does not send `detail`, the catalog falls back to category/name only and says so.
 - **Catalog entry:**
-  - `{ command: "Cat/Name", category, name, displayName, displayCategory, args: [...], variableArgs: bool, examples: [...], source: ["live","script","macro"] }`
+  - `{ command: "Cat/Name", category, name, displayName, displayCategory, args: [...], variableArgs: bool, examples: [...] }`
   - Declared argument names (`arguments`) become `args` of type `"unknown"` unless the script or macros give more.
   - Arguments seen only in macros are added with their observed values as examples.
 - **Cache:** one file, `~/.studio-one-mcp/commands/catalog.json` (`{ schema, builtAt, install, live: bool, commands, warnings }`). It is built on first use, rebuilt by `refresh: true` / `cmd refresh`, and rebuilt automatically when it is older than 24 h, or was built without live data, and Studio One answers.
@@ -67,12 +67,12 @@ src/commands/
     - a full phrase match in the name or displayName adds 5.
   - Ties are broken by shorter name.
   - The results are the top `limit` entries (default 10, max 50).
-  - With `enabled_only` or `with_state`, each hit gets `enabled` from `command checkOnly`, so the result says what applies to the current selection or editor (the automatic context).
+  - With `with_state`, each hit gets `enabled` from `command checkOnly`, so the result says what applies to the current selection or editor (the automatic context).
 
 ### Tools (server.js)
 
 - `live_find_command { query, limit?, with_state? }`
-  - Returns `{ results: [{ command, displayName, args: "Mode(Add|Set all to), AddValue(-64..64), SetValue(0..127)", enabled? }], catalog: { commands, builtAt, source } }`.
+  - Returns `{ results: [{ command, displayName, args: "Mode(Add|Set all to), AddValue(-64..64), SetValue(0..127)", enabled? }], catalog: { commands, builtAt, live, warnings } }`.
   - The description tells Claude to search first and then run with `live_command`.
 - `live_command_info { command }`
   - Returns the full entry: args with type, range, default, choices `{value, label}` and presets; the macro examples; and `enabled` now.
@@ -107,7 +107,7 @@ studio-one-mcp cmd refresh
 - Studio One is not running:
   - `find` and `info` work from the cache (with `enabled` omitted and a note);
   - with no cache, they report "start Studio One once to build the command catalog".
-- No install found (non-standard path): edit-task schemas are skipped, and declared argument names and macros still apply. `STUDIO_ONE_INSTALL` overrides the install path.
+- No install found (non-standard path): edit-task schemas are skipped, and declared argument names and macros still apply. `STUDIO_ONE_APP` overrides the install path.
 - Package parsing errors are per file: that package is skipped and listed in `catalog.warnings`.
 - A command that runs and returns `executed: false` is reported as "not available in the current context (needs a selection / open editor?)". The result includes `enabled` from checkOnly.
 

@@ -732,14 +732,14 @@ server.tool(
     category: z.string().optional(),
     name: z.string().optional(),
     check_only: z.boolean().optional().describe('Report {enabled} without executing'),
-    args: z.union([z.array(z.any()), z.record(z.any())]).optional().describe('Object {Arg: value} (checked) or legacy flat [key, value, …]'),
+    args: z.union([z.array(z.any()), z.record(z.string(), z.any())]).optional().describe('Object {Arg: value} (checked) or legacy flat [key, value, …]'),
   },
   guard((a) => runCommand(call, a)),
 );
 
 server.tool(
   'live_list_commands',
-  'Prefer live_find_command (ranked search with arguments). List Studio One commands available to live_command (about 1,000 on Studio One 5), optionally filtered by a substring. with_state adds whether each is enabled right now; many need a selection or an open editor.',
+  'Prefer live_find_command (ranked search with arguments). List Studio One commands available to live_command (about 1,400), optionally filtered by a substring. with_state adds whether each is enabled right now; many need a selection or an open editor.',
   { filter: z.string().optional(), with_state: z.boolean().optional() },
   guard(({ filter, with_state }) => call('listCommands', { filter, withState: !!with_state }, { timeoutMs: 15000 })),
 );

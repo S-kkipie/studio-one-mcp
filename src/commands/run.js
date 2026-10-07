@@ -68,6 +68,9 @@ export function normalizeArgs(entry, args) {
   if (args === undefined) return { flat: undefined, warnings: [] };
   if (Array.isArray(args)) return { flat: args, warnings: [] };
   if (args === null || typeof args !== 'object') throw new Error('args must be an object or a flat array');
+  if (entry?.argsKnown === false) {
+    return { flat: Object.entries(args).flat(), warnings: ['arguments not checked: bridge device is outdated (run studio-one-mcp setup)'] };
+  }
   if (entry && !entry.variableArgs && !entry.args?.length) {
     if (Object.keys(args).length) throw new Error(`${entry.command} takes no arguments`);
     return { flat: [], warnings: [] };
@@ -76,13 +79,16 @@ export function normalizeArgs(entry, args) {
     return { flat: Object.entries(args).flat(), warnings: ['arguments not checked: no schema for this command'] };
   }
   const flat = [];
+  const lenient = entry.variableArgs && entry.args.every((a) => a.type === 'unknown');
+  const warnings = [];
   const seen = new Set();
   for (const [key, value] of Object.entries(args)) {
     const arg = entry.args.find((a) => a.name === key) ?? entry.args.find((a) => a.name.toLowerCase() === key.toLowerCase());
+    if (!arg && lenient) { warnings.push(`unknown argument ${key} for ${entry.command}: not checked (no schema)`); flat.push(key, value); continue; }
     if (!arg) throw new Error(`unknown argument ${key} for ${entry.command}; valid: ${entry.args.map((a) => a.name).join(', ')}`);
     if (seen.has(arg.name)) throw new Error(`duplicate argument ${arg.name}`);
     seen.add(arg.name);
     flat.push(arg.name, normalizeValue(arg, value));
   }
-  return { flat, warnings: [] };
+  return { flat, warnings };
 }

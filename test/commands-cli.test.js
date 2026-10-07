@@ -84,3 +84,21 @@ test('--Name=value, boolean values, limit errors, empty displayName', async () =
   assert.equal(await runCmd(['find', 'start'], { call: t2.call, getCatalog: gc, out: t2.out }), 0);
   assert.equal(t2.logs[0], 'Transport/Start');
 });
+
+test('run: words after a flag are a usage error; numeric strings coerce for unknown-typed args', async () => {
+  const t = mk();
+  assert.equal(await runCmd(['run', 'Musical Functions/Transpose', '--Mode', 'Set', 'all', 'to'], { call: t.call, getCatalog, out: t.out }), 2);
+  assert.match(t.errs[0], /quote multi-word/);
+  const sent = [];
+  const gc = async () => ({ ...catalog, commands: [...catalog.commands, { command: 'X/Y', category: 'X', name: 'Y', displayName: '', args: [{ name: 'N', type: 'unknown' }] }] });
+  const t2 = mk(async (op, a) => { sent.push(a); return { executed: true }; });
+  await runCmd(['run', 'X/Y', '--N', '12'], { call: t2.call, getCatalog: gc, out: t2.out });
+  assert.deepEqual(sent.at(-1).args, ['N', 12]);
+});
+
+test('refresh exits 1 when Studio One did not answer; find caps --limit at 50', async () => {
+  const t = mk();
+  const gc = async () => ({ ...catalog, refreshFailed: true, warnings: ['refresh failed: x'] });
+  assert.equal(await runCmd(['refresh'], { call: t.call, getCatalog: gc, out: t.out }), 1);
+  assert.ok(t.logs.some((l) => /refresh failed/.test(l)));
+});

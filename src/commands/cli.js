@@ -1,6 +1,6 @@
 // `studio-one-mcp cmd find|info|run|refresh|help`: the command catalog from a terminal.
 import { findCommand, commandInfo, runCommand } from './tools.js';
-import { getCatalog as realGetCatalog } from './catalog.js';
+import { getCatalog as realGetCatalog, findEntry } from './catalog.js';
 
 export const CMD_USAGE = `studio-one-mcp cmd find <words…> [--limit N] [--state] [--json]
 studio-one-mcp cmd info <Category/Name> [--json]
@@ -15,10 +15,11 @@ export function parseCmdArgs(argv) {
   const cmdArgs = {};
   let i = 0;
   let error;
+  let late = false;
   while (i < rest.length && !rest[i].startsWith('--')) words.push(rest[i++]);
   while (i < rest.length) {
     const t = rest[i++];
-    if (!t.startsWith('--')) { words.push(t); continue; }
+    if (!t.startsWith('--')) { words.push(t); late = true; continue; }
     const eq = t.indexOf('=');
     const name = eq < 0 ? t.slice(2) : t.slice(2, eq);
     const inline = eq < 0 ? undefined : t.slice(eq + 1);
@@ -33,7 +34,10 @@ export function parseCmdArgs(argv) {
     if (name === 'limit') flags.limit = value;
     else cmdArgs[name] = value;
   }
-  return error ? { sub, words, flags, cmdArgs, error } : { sub, words, flags, cmdArgs };
+  const r = { sub, words, flags, cmdArgs };
+  if (late) r.late = true;
+  if (error) r.error = error;
+  return r;
 }
 
 function argLine(a) {
@@ -46,11 +50,12 @@ function argLine(a) {
 }
 
 export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = console } = {}) {
-  const { sub, words, flags, cmdArgs, error } = parseCmdArgs(argv);
+  const { sub, words, flags, cmdArgs, error, late } = parseCmdArgs(argv);
   if (sub === 'help') { out.log(CMD_USAGE); return 0; }
   const usage = (msg) => { if (msg) out.error(`error: ${msg}`); out.error(CMD_USAGE); return 2; };
   if (!['find', 'info', 'run', 'refresh'].includes(sub)) return usage(sub ? `unknown subcommand ${sub}` : null);
   if (error) return usage(error);
+  if (late && (sub === 'run' || sub === 'info')) return usage('quote multi-word values, e.g. --Mode "Set all to"');
   const opts = { getCatalog };
   const text = words.join(' ');
   const print = (r, lines) => { if (flags.json) out.log(JSON.stringify(r, null, 2)); else for (const l of lines) out.log(l); };
@@ -62,6 +67,7 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
       if (flags.limit !== undefined) {
         limit = flags.limit === true ? NaN : Number(flags.limit);
         if (!Number.isInteger(limit) || limit < 1) return usage('--limit needs a positive number');
+        limit = Math.min(limit, 50);
       }
       const r = await findCommand(call, { query: text, limit, with_state: !!flags.state }, opts);
       print(r, r.results.map((x) => [x.command, x.displayName, x.args].filter(Boolean).join(' — ') + `${x.enabled === undefined ? '' : x.enabled ? ' [enabled]' : ' [disabled]'}`));
@@ -81,7 +87,17 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
     if (sub === 'run') {
       if (!text) return usage('run needs Category/Name');
       let r;
-      try { r = await runCommand(call, { command: text, args: Object.keys(cmdArgs).length ? cmdArgs : undefined, check_only: !!flags.check }, opts); }
+      let args = Object.keys(cmdArgs).length ? cmdArgs : undefined;
+      if (args) {
+        let entry = null;
+        try { entry = findEntry(await getCatalog(call, {}), text); } catch { /* no schema */ }
+        args = { ...args };
+        for (const [k, v] of Object.entries(args)) {
+          const a = entry?.args?.find((x) => x.name === k) ?? entry?.args?.find((x) => x.name.toLowerCase() === k.toLowerCase());
+          if ((!a || a.type === 'unknown') && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) args[k] = Number(v);
+        }
+      }
+      try { r = await runCommand(call, { command: text, args, check_only: !!flags.check }, opts); }
       catch (e) { if (String(e.message).includes('Category/Name')) return usage(e.message); throw e; }
       const lines = [r.executed === false ? 'not executed' : 'executed'];
       if (r.enabled !== undefined) lines.push(`enabled: ${r.enabled}`);
@@ -93,7 +109,7 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
     const c = await getCatalog(call, { refresh: true });
     const w = c.warnings ?? [];
     print(c, [`catalog: ${c.commands.length} commands (${c.live ? 'live' : 'macro-only'}), ${w.length} warnings`, ...w]);
-    return 0;
+    return c.refreshFailed ? 1 : 0;
   } catch (e) {
     out.error(`error: ${e.message}`);
     return 1;

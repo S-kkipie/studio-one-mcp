@@ -5,7 +5,7 @@ import { splitCommand, normalizeArgs } from './run.js';
 
 async function checkEnabled(call, command) {
   const { category, name } = splitCommand(command);
-  const r = await call('command', { category, name, checkOnly: true });
+  const r = await call('command', { category, name, checkOnly: true }, { timeoutMs: 1500 });
   return r?.enabled;
 }
 
@@ -15,11 +15,12 @@ export async function findCommand(call, { query, limit = 10, with_state, refresh
   const results = searchCommands(catalog, query, { limit });
   const out = { results, catalog: { commands: catalog.commands.length, builtAt: catalog.builtAt, live: catalog.live, warnings: catalog.warnings } };
   if (with_state) {
-    let failed = false;
     for (const r of results) {
-      try { r.enabled = await checkEnabled(call, r.command); } catch { failed = true; }
+      try { r.enabled = await checkEnabled(call, r.command); } catch {
+        out.note = 'could not check enabled state for some commands (Studio One not running or busy)';
+        break;
+      }
     }
-    if (failed) out.note = 'could not check enabled state for some commands';
   }
   return out;
 }
@@ -33,7 +34,7 @@ export async function commandInfo(call, { command }, opts = {}) {
     throw new Error(`no command ${command}; closest: ${near.join(', ')}`);
   }
   const info = { ...entry, argsSummary: argSummary(entry) };
-  try { info.enabled = await checkEnabled(call, entry.command); } catch { /* omitted */ }
+  try { info.enabled = await checkEnabled(call, entry.command); } catch { info.note = 'could not ask Studio One whether it is enabled (not running or busy)'; }
   return info;
 }
 
@@ -46,7 +47,10 @@ export async function runCommand(call, { command, category, name, args, check_on
   if (args && typeof args === 'object' && !Array.isArray(args)) {
     try { entry = findEntry(await get(call, {}), full); } catch { entry = null; }
   }
-  const { flat, warnings } = normalizeArgs(entry, args);
+  if (entry) ({ category, name } = entry);
+  const isObj = args && typeof args === 'object' && !Array.isArray(args);
+  let { flat, warnings } = normalizeArgs(entry, args);
+  if (isObj && !entry) warnings = ['command not in the catalog: arguments not checked'];
   const payload = { category, name, checkOnly: !!check_only };
   if (flat !== undefined) payload.args = flat;
   const result = await call('command', payload);

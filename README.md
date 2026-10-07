@@ -72,7 +72,9 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_channels` | Live mixer: volume, pan, mute, solo, record-arm, input monitoring, automation mode, and routing (input and output by name) for each channel. To change a track's output, use `live_track_edit` with `route`. |
 | `live_set_channel` | Set volume, pan, mute, solo, record-arm or input monitoring on a channel. |
 | `live_add_bus` | Create a bus for some tracks (their outputs are routed into it) or a VCA that controls them. One undo removes it and puts the routing back. |
-| `live_command` | Run any of the roughly 1,000 Studio One commands, e.g. `Transport/Start`, `Edit/Undo`, `File/Save` or `View/Console`. `check_only` reports whether one is enabled without running it. |
+| `live_find_command` | Search Studio One's commands in plain English or Spanish (e.g. "transponer una octava") and get the best matches as `Category/Name` with a short argument summary. `with_state` adds whether each can run right now. The catalog is built from the running Studio One and cached. |
+| `live_command_info` | Full description of one command: its arguments with type, range, default and named choices, real examples from your macros, and whether it is enabled right now. |
+| `live_command` | Run any of the about 1,400 Studio One commands (1,429 on Studio One 7), e.g. `Transport/Start`, `Edit/Undo`, `File/Save` or `View/Console`. `check_only` reports whether one is enabled without running it. |
 | `live_list_commands` | Discover command names, optionally with whether each is enabled right now. |
 | `live_changes` | What changed in the song since the previous call: tracks added, removed, renamed or reordered, events on each track, mixer changes (levels, mute and solo, arm, monitor, automation mode, output, plug-ins), tempo, loop, markers and sections. It compares snapshots, so it sees what you did by hand as well, as net changes. |
 | `live_eval` | Run JavaScript inside Studio One to explore its object model. Opt-in only. |
