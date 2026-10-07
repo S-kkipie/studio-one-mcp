@@ -129,7 +129,27 @@ function fakePluginMenu(plugins) {
   };
 }
 
-export function fakeHost({ commands = [], document = null, plugins = [] } = {}) {
+export function fakeAttrs(init = {}) {
+  const names = Object.keys(init);
+  const vals = new Map(Object.entries(init));
+  return {
+    getAttribute: (n) => vals.get(n),
+    setAttribute: (n, v) => { if (!vals.has(n)) names.push(n); vals.set(n, v); },
+    removeAttribute: (n) => { if (vals.delete(n)) names.splice(names.indexOf(n), 1); },
+    countAttributes: () => names.length,
+    getAttributeName: (i) => names[i],
+    getAttributeValue: (i) => vals.get(names[i]),
+  };
+}
+export const fakeFileType = (ext) => ({ extension: ext, description: `${ext} file` });
+// A codec section as Studio One 7.2.3 keeps it: current trio on top, one entry per other format.
+export function fakeCodec(current = 'mp3', others = ['wav', 'aif', 'flac', 'caf', 'm4a', 'ogg', 'opus']) {
+  const top = { fileType: fakeFileType(current), format: { fmt: current }, attributes: fakeAttrs({ bitRate: 4 }) };
+  for (const ext of others) top[ext] = fakeAttrs({ selected: 0, fileType: fakeFileType(ext), format: { fmt: ext } });
+  return fakeAttrs(top);
+}
+
+export function fakeHost({ commands = [], document = null, plugins = [], settings = {} } = {}) {
   const files = new Map(); // url string -> contents
   const logs = [];
   const executed = [];
@@ -169,7 +189,12 @@ export function fakeHost({ commands = [], document = null, plugins = [] } = {}) 
         },
       },
     },
-    Attributes: (pairs) => ({ pairs }),
+    Attributes: (pairs) => {
+      const init = {};
+      for (let i = 0; i + 1 < pairs.length; i += 2) init[pairs[i]] = pairs[i + 1];
+      return Object.assign(fakeAttrs(init), { pairs });
+    },
+    Settings: { getAttributes: (path) => settings[path] || (settings[path] = fakeAttrs({})) },
     Classes: { createInstance: (name) => (name === 'Host:PlugInMenuParam' ? fakePluginMenu(plugins) : null) },
     Objects: { getObjectByUrl: (url) => (document && document.urls[url]) || null },
     Console: { writeLine: (s) => logs.push(String(s)) },

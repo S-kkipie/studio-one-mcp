@@ -135,6 +135,7 @@ class Bridge {
             case "channels": return this.fromComponent(c => c.channels());
             case "setChannel": return this.fromComponent(c => c.setChannel(args));
             case "command": return this.command(args);
+            case "exportSettings": return this.exportSettings(args);
             case "editorCommand": return this.editorCommand(args);
             case "listCommands": return this.listCommands(args);
             case "song": return this.song();
@@ -196,6 +197,126 @@ class Bridge {
         const ed = docObject("Editor");
         if (!ed || !has(ed, "interpretCommand", "function")) return this.command(args);
         return { executed: !!ed.interpretCommand(String(args.category), String(args.name)), via: "editor" };
+    }
+
+    // ---- export settings (Song/Export Mixdown, Song/Export Stems) ---------------
+    // Host.Settings holds the live settings the export dialogs read when they open.
+    // The codec section keeps the CURRENT format on top (fileType, format, attributes;
+    // always exported) and one entry per other format (selected: 0/1, mixdown only).
+
+    exportSections(kind) {
+        if (kind !== "mixdown" && kind !== "stems") return null;
+        const base = kind === "mixdown" ? "SongRenderer" : "StemRenderer";
+        if (!Host.Settings || !has(Host.Settings, "getAttributes", "function")) return null;
+        const renderer = Host.Settings.getAttributes(base);
+        const codec = Host.Settings.getAttributes(base + ".AudioCodec");
+        const ok = (a) => a && has(a, "getAttribute", "function") && has(a, "setAttribute", "function") && has(a, "countAttributes", "function");
+        return ok(renderer) && ok(codec) && codec.getAttribute("fileType") ? { renderer, codec } : null;
+    }
+
+    exportExt(fileType) {
+        return fileType && fileType.extension !== undefined && fileType.extension !== null ? String(fileType.extension).toLowerCase() : "";
+    }
+
+    exportEntries(codec) {
+        const out = [];
+        for (let i = 0; i < codec.countAttributes(); i++) {
+            const name = String(codec.getAttributeName(i));
+            const v = codec.getAttributeValue(i);
+            if (name !== "fileType" && name !== "format" && name !== "attributes" && v && has(v, "getAttribute", "function")) out.push(name);
+        }
+        return out;
+    }
+
+    exportState(kind, s) {
+        const opts = kind === "mixdown"
+            ? ["importToTrack", "realtimeOption", "closeAfterExport", "preMasterFX", "writeAudioTempo"]
+            : ["importToTrack", "realtime", "closeAfterExport", "preMasterFX", "writeAudioTempo", "splitMono", "keepSpeakerFormat"];
+        const options = {};
+        for (const n of opts) { const v = s.renderer.getAttribute(n); if (v !== undefined && v !== null) options[n] = Number(v); }
+        const current = this.exportExt(s.codec.getAttribute("fileType"));
+        const entries = this.exportEntries(s.codec);
+        const selected = [current];
+        if (kind === "mixdown") for (const e of entries) { if (Number(s.codec.getAttribute(e).getAttribute("selected")) === 1 && selected.indexOf(e) < 0) selected.push(e); }
+        const available = [current].concat(entries.filter(e => e !== current));
+        return { kind: kind, range: Number(s.renderer.getAttribute("renderRange")), current: current, selected: selected, available: available, options: options };
+    }
+
+    exportSettings(args) {
+        const kind = String(args.kind || "");
+        const s = this.exportSections(kind);
+        if (!s) return fail("export settings are not reachable (kind must be mixdown or stems)");
+        this.exportSnapshots = this.exportSnapshots || {};
+        const action = args.action || "get";
+        if (action === "get") return this.exportState(kind, s);
+        if (action === "restore") {
+            const snap = this.exportSnapshots[kind];
+            if (!snap) return { restored: false, settings: this.exportState(kind, s) };
+            for (const part of ["renderer", "codec"]) {
+                const sec = s[part];
+                const names = {};
+                for (const pair of snap[part]) { names[pair[0]] = true; sec.setAttribute(pair[0], pair[1]); }
+                if (has(sec, "removeAttribute", "function")) {
+                    const extra = [];
+                    for (let i = 0; i < sec.countAttributes(); i++) { const n = String(sec.getAttributeName(i)); if (!names[n]) extra.push(n); }
+                    for (const n of extra) sec.removeAttribute(n);
+                }
+            }
+            for (const e in snap.selected) {
+                const ent = s.codec.getAttribute(e);
+                if (ent && has(ent, "setAttribute", "function") && snap.selected[e] !== undefined) ent.setAttribute("selected", snap.selected[e]);
+            }
+            delete this.exportSnapshots[kind];
+            return { restored: true, settings: this.exportState(kind, s) };
+        }
+        if (action !== "apply") return fail("action must be get, apply or restore");
+        // Validate everything before changing anything.
+        const formats = Array.isArray(args.formats) ? args.formats.map(f => String(f).toLowerCase()) : null;
+        const current = this.exportExt(s.codec.getAttribute("fileType"));
+        const entries = this.exportEntries(s.codec);
+        if (formats) {
+            if (!formats.length) return fail("formats is empty");
+            if (kind === "stems" && formats.length !== 1) return fail("stems take exactly one format");
+            for (const f of formats) if (f !== current && entries.indexOf(f) < 0) return fail("format " + f + " is not available");
+        }
+        if (args.range !== undefined && [0, 1, 2].indexOf(Number(args.range)) < 0) return fail("range must be 0, 1 or 2");
+        // Snapshot (references) so restore puts the user's settings back exactly.
+        const snapOf = (sec) => { const out = []; for (let i = 0; i < sec.countAttributes(); i++) out.push([String(sec.getAttributeName(i)), sec.getAttributeValue(i)]); return out; };
+        if (!this.exportSnapshots[kind]) {
+            // Entries are shared objects that apply edits in place, so keep their selected flags too.
+            const sel = {};
+            for (const e of entries) { const ent = s.codec.getAttribute(e); if (ent && has(ent, "getAttribute", "function")) sel[e] = ent.getAttribute("selected"); }
+            this.exportSnapshots[kind] = { renderer: snapOf(s.renderer), codec: snapOf(s.codec), selected: sel };
+        }
+        if (args.range !== undefined) s.renderer.setAttribute("renderRange", Number(args.range));
+        const o = args.options || {};
+        for (const n in o) if (Object.prototype.hasOwnProperty.call(o, n) && o[n] !== undefined && o[n] !== null) s.renderer.setAttribute(n, o[n] ? 1 : 0);
+        s.renderer.setAttribute("closeAfterExport", 1);
+        if (formats) {
+            const target = formats[0];
+            if (target !== current) {
+                const entry = s.codec.getAttribute(target);
+                const holder = Host.Attributes(["selected", 0]);
+                if (!holder || !has(holder, "setAttribute", "function")) return fail("cannot create a settings entry");
+                holder.setAttribute("fileType", s.codec.getAttribute("fileType"));
+                holder.setAttribute("format", s.codec.getAttribute("format"));
+                const attrs = s.codec.getAttribute("attributes");
+                if (attrs) holder.setAttribute("attributes", attrs);
+                s.codec.setAttribute(current, holder);
+                s.codec.setAttribute("fileType", entry.getAttribute("fileType"));
+                s.codec.setAttribute("format", entry.getAttribute("format"));
+                const eAttrs = entry.getAttribute("attributes");
+                if (eAttrs) s.codec.setAttribute("attributes", eAttrs);
+            }
+            if (kind === "mixdown") {
+                for (const e of this.exportEntries(s.codec)) {
+                    if (e === target) continue;
+                    const ent = s.codec.getAttribute(e);
+                    if (ent && has(ent, "setAttribute", "function")) ent.setAttribute("selected", formats.indexOf(e) >= 0 ? 1 : 0);
+                }
+            }
+        }
+        return this.exportState(kind, s);
     }
 
     // checkOnly asks whether the command is currently enabled without running it
