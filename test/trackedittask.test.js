@@ -210,3 +210,53 @@ test('renameMarker by number; the eval probe is off without allowEval', () => {
   assert.deepEqual(s.log, [['rename', 'Drop']]);
   assert.match(results[1].error, /eval is disabled/);
 });
+
+// An instrument track "Keys" with one part from 4 s to 8 s (beats 8..16 at 120 bpm).
+function keysSong() {
+  const s = song();
+  const t = (sec) => ({ seconds: sec, musical: sec * 2, as: (f) => (f === 2 ? sec * 2 : sec) });
+  const notes = [];
+  const part = { name: 'Keys', startTime: t(4), endTime: t(8), timeFormat: 2, notes, createSequenceIterator: () => { let k = 0; return { done: () => k >= notes.length, next: () => notes[k++] }; } };
+  const keys = { name: 'Keys', mediaType: 'Music', parentFolderID: '', events: [part] };
+  keys.createIterator = () => { let k = 0; return { next: () => keys.events[k++] || null }; };
+  s.tracks.push(keys);
+  const music = {
+    createEvent: (kind) => (kind === 'Note' ? { kind } : null),
+    insertEvent: (p, n) => { n.part = p; p.notes.push(n); },
+    modifyPitch: (n, p) => { n.pitch = p; },
+    modifyVelocity: (n, v) => { n.velocity = v; },
+    freezeVelocity: (n) => { n.frozen = true; },
+    resizeEvent: (n, len) => { n.length = len; },
+    moveEvent: (n, at) => { n.at = at; },
+  };
+  const prev = s.context.functions.root.createFunctions;
+  s.context.functions.root.createFunctions = (n) => (n === 'MusicFunctions' ? music : prev(n));
+  return { ...s, part, notes };
+}
+
+function runKeys(ops) {
+  const t = load();
+  const s = keysSong();
+  t.request(ops);
+  t.task.performEdit(s.context);
+  return { results: t.result().results, s };
+}
+
+test('addNotes writes notes into the part covering `at`, beats relative to `at`, part-relative positions', () => {
+  // at = 5 s → song beat 10; part starts at beat 8 → base 2.
+  const { results, s } = runKeys([{ op: 'addNotes', track: 'Keys', at: 5, notes: [{ pitch: 60, beat: 0, length: 4, velocity: 127 }, { pitch: 67, beat: 1.5, length: 0.5 }] }]);
+  assert.deepEqual(results[0], { op: 'addNotes', track: 'Keys', part: 'Keys', added: 2, errors: [] });
+  assert.deepEqual(s.notes.map((n) => [n.pitch, n.at, n.length, Math.round(n.velocity * 127), n.frozen]), [[60, 2, 4, 127, true], [67, 3.5, 0.5, 100, true]]);
+});
+
+test('addNotes reports bad notes and still writes the good ones', () => {
+  const { results, s } = runKeys([{ op: 'addNotes', track: 'Keys', at: 4, notes: [{ pitch: 128, beat: 0, length: 1 }, { pitch: 60, beat: 0, length: 0 }, { pitch: 62, beat: -1, length: 1 }, { pitch: 64, beat: 0, length: 1, velocity: 300 }] }]);
+  assert.equal(results[0].added, 1);
+  assert.deepEqual(results[0].errors, ['note 1: pitch must be an integer 0-127', 'note 2: length must be > 0 beats', 'note 3: beat must be >= 0']);
+  assert.equal(Math.round(s.notes[0].velocity * 127), 127);
+});
+
+test('addNotes: no part at that position, unknown track', () => {
+  assert.match(runKeys([{ op: 'addNotes', track: 'Keys', at: 9, notes: [{ pitch: 60, beat: 0, length: 1 }] }]).results[0].error, /no instrument part on Keys at 9 s/);
+  assert.match(runKeys([{ op: 'addNotes', track: 'Nope', at: 4, notes: [] }]).results[0].error, /no track named Nope/);
+});
