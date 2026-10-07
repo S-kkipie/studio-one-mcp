@@ -18,6 +18,7 @@ import { arranger, listMacros, runMacro } from './arranger.js';
 import { tempo } from './tempo.js';
 import { trackEdit, addBus, trackTask, addInstrumentTrack, addFxSend } from './tracks.js';
 import { liveEvents } from './events.js';
+import { listChords, setChords, extractChords, partsFromChords, clearChords } from './harmony.js';
 import { timeSignature } from './signatures.js';
 import { writeAutomation } from './automation.js';
 import { toSeconds } from './time.js';
@@ -548,6 +549,27 @@ server.tool(
   },
   guard(({ bars_per_chord, ...a }) => writeChords(call, { ...a, barsPerChord: bars_per_chord })),
 );
+
+server.tool('live_chords',
+  "The running song's chord track: chord names (as Studio One shows them) with start and end in seconds, in time order. from / to (seconds or bars like \"5.1.1.0\") limit it to chords overlapping that range.",
+  { from: z.union([z.number(), z.string()]).optional(), to: z.union([z.number(), z.string()]).optional() },
+  guard((a) => listChords(call, a)));
+server.tool('live_set_chords',
+  "Write a chord progression onto the chord track from a bar, e.g. \"G D Em C\" (one chord per bar) or \"Cm7 | Ab | Eb Bb\" (| separates bars). Studio One names the chords itself (it works them out from notes drawn on a temporary track that is removed again), so the result lists what the chord track now shows and any mismatch. replace (default true) first removes chord events overlapping the range. Assumes 4/4. Several undo steps: to take it back, use live_clear_chords on the range.",
+  { bar: z.number().int().min(1), progression: z.string(), bars_per_chord: z.number().int().min(1).optional(), replace: z.boolean().optional() },
+  guard((a) => setChords(call, { bar: a.bar, progression: a.progression, barsPerChord: a.bars_per_chord, replace: a.replace })));
+server.tool('live_extract_chords',
+  "Detect the chords in a track (instrument parts, or audio through Studio One's chord detection) and write them to the chord track (Event/Extract to Chord Track on all its events). One live_undo reverts it. Returns the chord track afterwards.",
+  { track: z.string() },
+  guard((a) => extractChords(call, a)));
+server.tool('live_parts_from_chords',
+  "Fill an instrument track with parts made from the chord track (one part per chord, close voicings), as Studio One's Insert Instrument Parts from Chord Track does. One live_undo reverts it. Returns the parts added.",
+  { track: z.string() },
+  guard((a) => partsFromChords(call, a)));
+server.tool('live_clear_chords',
+  "Remove chord track events overlapping from..to (seconds or bars), or all of them. One live_undo reverts it.",
+  { from: z.union([z.number(), z.string()]).optional(), to: z.union([z.number(), z.string()]).optional() },
+  guard((a) => clearChords(call, a)));
 
 server.tool(
   'live_write_drums',
