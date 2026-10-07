@@ -11,7 +11,7 @@ const unescapeXml = (s) => s
   .replace(/&amp;/g, '&');
 
 function attrs(text) {
-  const out = {};
+  const out = Object.create(null);
   for (const m of text.matchAll(/(\w+)="([^"]*)"/g)) out[m[1]] = unescapeXml(m[2]);
   return out;
 }
@@ -93,7 +93,7 @@ export function parseScriptArgs(js) {
   const callRe = /(?:\bcontext\s*\.\s*)?\bparameters\s*\.\s*(add\w*)\s*\(/g;
   for (const m of js.matchAll(callRe)) {
     const kind = m[1].slice(3);
-    if (kind !== '' && !(kind in KINDS)) continue;
+    if (kind !== '' && !Object.hasOwn(KINDS, kind)) continue;
     const open = m.index + m[0].length - 1;
     const text = callText(js, open);
 
@@ -128,8 +128,8 @@ export function parseScriptArgs(js) {
       if (max !== null) arg.max = max;
     }
     if (target) {
-      const dm = new RegExp(`\\b${escRe(target)}\\.(?:default|value)\\s*=(?!=)\\s*([-+]?(?:\\d+\\.?\\d*|\\.\\d+))\\s*(?:[;\\n]|$)`).exec(js);
-      if (dm) arg.default = Number(dm[1]);
+      const dm = new RegExp(`\\b${escRe(target)}\\.(?:default|value)\\s*=(?!=)\\s*([-+]?(?:\\d+\\.?\\d*|\\.\\d+)|true|false)\\s*(?:[;\\n]|$)`).exec(js);
+      if (dm) arg.default = dm[1] === 'true' ? true : dm[1] === 'false' ? false : Number(dm[1]);
     }
     args.push(arg);
   }
@@ -138,12 +138,12 @@ export function parseScriptArgs(js) {
 }
 
 export function parseSkinForms(xml) {
-  const forms = {};
-  for (const fm of xml.matchAll(/<Form\b([^>]*)>([\s\S]*?)<\/Form>/g)) {
-    if (fm[1].trimEnd().endsWith('/')) continue;
+  const forms = Object.create(null);
+  for (const fm of xml.matchAll(/<Form\b([^>]*?)(?:\/>|>([\s\S]*?)<\/Form>)/g)) {
+    if (fm[2] === undefined) continue;
     const { name: formName } = attrs(fm[1]);
     if (!formName) continue;
-    const form = (forms[formName] ??= {});
+    const form = (forms[formName] ??= Object.create(null));
     for (const em of fm[2].matchAll(/<(RadioButton|ToolButton)\b([^>]*)>/g)) {
       const a = attrs(em[2]);
       const value = Number(a.value);
@@ -163,11 +163,11 @@ export function schemasFromPackageFiles(files) {
   if (!fkey) return {};
   const classes = parseClassFactory(files.get(fkey).toString('utf8'));
 
-  const forms = {};
+  const forms = Object.create(null);
   for (const [n, buf] of files) {
     if (!/\.xml$/i.test(n) || n.toLowerCase() === 'classfactory.xml') continue;
     for (const [f, argsMap] of Object.entries(parseSkinForms(buf.toString('utf8')))) {
-      const dst = (forms[f] ??= {});
+      const dst = (forms[f] ??= Object.create(null));
       for (const [a, v] of Object.entries(argsMap)) {
         const slot = (dst[a] ??= { choices: [], presets: [] });
         for (const k of ['choices', 'presets']) {
@@ -177,13 +177,13 @@ export function schemasFromPackageFiles(files) {
     }
   }
 
-  const out = {};
+  const out = Object.create(null);
   for (const c of classes) {
     if (!c.sourceFile) continue;
     const src = get(c.sourceFile);
     if (!src) continue;
     const { args, dialog } = parseScriptArgs(src.toString('utf8'));
-    const form = (dialog && forms[dialog]) || {};
+    const form = (dialog && forms[dialog]) || Object.create(null);
     out[c.classID] = {
       task: c.name,
       subCategory: c.subCategory,
@@ -202,7 +202,7 @@ export function schemasFromPackageFiles(files) {
 export function extractEditTaskSchemas(installDir) {
   const scripts = path.join(installDir, 'Scripts');
   if (!fs.existsSync(scripts)) return { schemas: {}, warnings: ['no Studio One install found'] };
-  const schemas = {};
+  const schemas = Object.create(null);
   const warnings = [];
   for (const f of fs.readdirSync(scripts).filter((n) => /\.package$/i.test(n)).sort()) {
     try {

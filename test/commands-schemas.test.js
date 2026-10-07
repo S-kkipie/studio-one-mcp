@@ -97,3 +97,15 @@ test('extractEditTaskSchemas reads Scripts/*.package and survives a bad one', ()
   assert.match(warnings[0], /broken\.package/);
   assert.deepEqual(extractEditTaskSchemas(path.join(dir, 'nope')), { schemas: {}, warnings: ['no Studio One install found'] });
 });
+
+test('hardening: self-closing Form, boolean defaults, __proto__ keys', () => {
+  const f = parseSkinForms('<Skin><Form name="A" title="x"/><Form name="B"><RadioButton name="M" value="1" title="One"/></Form><Form name="__proto__"><RadioButton name="__proto__" value="1" title="P"/></Form></Skin>');
+  assert.equal(f.A, undefined);
+  assert.deepEqual(f.B.M.choices, [{ value: 1, label: 'One' }]);
+  assert.equal(({}).choices, undefined);
+  assert.equal(Object.getPrototypeOf({}), Object.prototype);
+  assert.equal(Object.prototype.M, undefined);
+  const r = parseScriptArgs('this.On = parameters.addParam ("On");\nthis.On.default = true;\nthis.Off = parameters.addParam ("Off");\nthis.Off.value = false;\n');
+  assert.equal(r.args[0].default, true);
+  assert.equal(r.args[1].default, false);
+});
