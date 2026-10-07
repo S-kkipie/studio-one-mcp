@@ -1,0 +1,45 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { EXPORT_SCRIPT, windowsSnapshot, driveExportDialog } from '../src/export/dialog.js';
+
+const script = readFileSync(EXPORT_SCRIPT, 'utf8').replace(/\r\n/g, '\n');
+
+test('script reads its inputs from env and stays safe', () => {
+  for (const v of ['S1MCP_XD_MODE', 'S1MCP_XD_PID', 'S1MCP_XD_BEFORE']) assert.ok(script.includes(`$env:${v}`), v);
+  assert.ok(script.includes('CCLDialogClass') && script.includes('#32770'));
+  assert.doesNotMatch(script, /Invoke-Expression|\biex\b/i);
+  assert.doesNotMatch(script, /SetForegroundWindow|SendInput|keybd_event/);
+  assert.ok(/0x0D/i.test(script) && /0x1B/i.test(script));
+});
+
+test('driveExportDialog passes env and parses the result', async () => {
+  let seen;
+  const run = async (cmd, args, opts) => {
+    seen = opts;
+    return { stdout: '{"event":"dialog","hwnd":"C","title":"Exportar mezcla"}\r\n{"ok":true}\r\n', aborted: false };
+  };
+  const r = await driveExportDialog({ pid: 123, before: ['A', 'B'] }, { run, platform: 'win32' });
+  assert.deepEqual(r, { ok: true, dialog: { hwnd: 'C', title: 'Exportar mezcla' } });
+  const e = seen.env;
+  assert.equal(e.S1MCP_XD_MODE, 'drive');
+  assert.equal(e.S1MCP_XD_PID, '123');
+  assert.equal(e.S1MCP_XD_BEFORE, 'A,B');
+  assert.equal(e.S1MCP_XD_TIMEOUT_MS, '15000');
+  assert.equal(e.S1MCP_XD_WATCH_MS, '4000');
+  assert.equal(seen.timeout, 29000);
+});
+
+test('alert and missing result', async () => {
+  const alert = async () => ({ stdout: '{"ok":false,"reason":"alert","title":"Studio One"}', aborted: false });
+  assert.deepEqual(await driveExportDialog({ pid: 1 }, { run: alert, platform: 'win32' }), { ok: false, reason: 'alert', title: 'Studio One' });
+  const none = async () => ({ stdout: '', aborted: false });
+  assert.deepEqual(await driveExportDialog({ pid: 1 }, { run: none, platform: 'win32' }), { ok: false, reason: 'no result from the dialog helper' });
+});
+
+test('windowsSnapshot parses windows; off Windows rejects', async () => {
+  const run = async (c, a, o) => { assert.equal(o.env.S1MCP_XD_MODE, 'snapshot'); return { stdout: '{"windows":["A","B"]}', aborted: false }; };
+  assert.deepEqual(await windowsSnapshot(5, { run, platform: 'win32' }), ['A', 'B']);
+  await assert.rejects(windowsSnapshot(5, { platform: 'darwin' }), /Windows only/);
+  await assert.rejects(driveExportDialog({ pid: 5 }, { platform: 'darwin' }), /Windows only/);
+});
