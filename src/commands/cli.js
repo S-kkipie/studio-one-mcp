@@ -99,8 +99,8 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
       }
       try { r = await runCommand(call, { command: text, args, check_only: !!flags.check }, opts); }
       catch (e) { if (String(e.message).includes('Category/Name')) return usage(e.message); throw e; }
-      const lines = [r.executed === false ? 'not executed' : 'executed'];
-      if (r.enabled !== undefined) lines.push(`enabled: ${r.enabled}`);
+      // --check only asks; it never runs the command.
+      const lines = flags.check ? [`enabled: ${r.enabled}`] : [r.executed === false ? 'not executed' : 'executed'];
       if (r.note) lines.push(r.note);
       for (const w of r.warnings ?? []) lines.push(`warning: ${w}`);
       print(r, lines);
