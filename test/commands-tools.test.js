@@ -1,0 +1,62 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { findCommand, commandInfo, runCommand } from '../src/commands/tools.js';
+
+const catalog = {
+  schema: 1, builtAt: 1, install: null, live: true, warnings: [],
+  commands: [
+    { command: 'Musical Functions/Transpose', category: 'Musical Functions', name: 'Transpose', displayName: 'Transpose', args: [
+      { name: 'Mode', type: 'int', min: 0, max: 1, choices: [{ value: 0, label: 'Add/Subtract' }, { value: 1, label: 'Set all to' }] },
+      { name: 'AddValue', type: 'int', min: -64, max: 64 },
+    ] },
+    { command: 'Transport/Start', category: 'Transport', name: 'Start', displayName: 'Start', args: [] },
+  ],
+};
+const opts = { getCatalog: async () => catalog };
+const fakeCall = (result = { enabled: true }) => {
+  const calls = [];
+  const fn = async (op, a) => { calls.push([op, a]); return typeof result === 'function' ? result(op, a) : result; };
+  fn.calls = calls;
+  return fn;
+};
+
+test('findCommand with_state adds enabled', async () => {
+  const call = fakeCall();
+  const r = await findCommand(call, { query: 'transpose', with_state: true }, opts);
+  assert.equal(r.results[0].command, 'Musical Functions/Transpose');
+  assert.equal(r.results[0].enabled, true);
+  assert.equal(r.catalog.commands, 2);
+  assert.deepEqual(call.calls[0], ['command', { category: 'Musical Functions', name: 'Transpose', checkOnly: true }]);
+});
+
+test('findCommand omits enabled when the check throws', async () => {
+  const call = fakeCall(() => { throw new Error('x'); });
+  const r = await findCommand(call, { query: 'transpose', with_state: true }, opts);
+  assert.equal('enabled' in r.results[0], false);
+});
+
+test('commandInfo returns entry with summary and enabled; unknown lists closest', async () => {
+  const info = await commandInfo(fakeCall(), { command: 'Musical Functions/Transpose' }, opts);
+  assert.equal(info.enabled, true);
+  assert.ok(info.argsSummary);
+  await assert.rejects(commandInfo(fakeCall(), { command: 'Transpos' }, opts), /no command Transpos; closest:/);
+});
+
+test('runCommand normalizes object args', async () => {
+  const call = fakeCall({ executed: true });
+  const r = await runCommand(call, { command: 'Musical Functions/Transpose', args: { Mode: 'add', AddValue: 12 } }, opts);
+  assert.deepEqual(call.calls[0], ['command', { category: 'Musical Functions', name: 'Transpose', checkOnly: false, args: ['Mode', 0, 'AddValue', 12] }]);
+  assert.equal(r.command, 'Musical Functions/Transpose');
+});
+
+test('runCommand works without a catalog', async () => {
+  const call = fakeCall({ executed: true });
+  await runCommand(call, { category: 'Transport', name: 'Start' }, { getCatalog: async () => { throw new Error('down'); } });
+  assert.equal(call.calls[0][1].name, 'Start');
+  await assert.rejects(runCommand(call, {}, opts), /Category\/Name/);
+});
+
+test('runCommand notes executed:false', async () => {
+  const r = await runCommand(fakeCall({ executed: false }), { command: 'Transport/Start' }, opts);
+  assert.match(r.note, /not available in the current context/);
+});

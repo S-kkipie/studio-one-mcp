@@ -26,6 +26,7 @@ import { recordSetup } from './record.js';
 import { snapshot } from './snapshots.js';
 import { mixSnapshot } from './mixsnap.js';
 import { bounce } from './bounce.js';
+import { findCommand, commandInfo, runCommand } from './commands/tools.js';
 import { diffSongs } from './diff.js';
 import { gridBeats } from './grid.js';
 import { createPart, writeNotes, writeChords, writeDrums, emptyPartAdd, addsToEmptyPart } from './compose.js';
@@ -725,21 +726,36 @@ server.tool(
 
 server.tool(
   'live_command',
-  'Run any Studio One command by category and name, exactly as listed in Studio One → Keyboard Shortcuts (e.g. Transport/Start, Transport/Stop, Transport/Record, Edit/Undo, File/Save, View/Console). Use live_list_commands to discover names. With check_only, only reports whether the command is currently enabled, without running it.',
+  'Run any Studio One command: command "Category/Name" (or category + name), e.g. Transport/Start, Edit/Undo, View/Console, Musical Functions/Transpose. Find names with live_find_command and arguments with live_command_info. args is an object such as {"Mode": "Add/Subtract", "AddValue": 12}: names and named choices are checked against the catalog; arguments you leave out keep the values Studio One last used for that command. A legacy flat [key, value, …] array is also accepted. Most commands act on the current selection (live_select_events / live_select_track). check_only reports whether it is enabled without running it.',
   {
-    category: z.string(),
-    name: z.string(),
+    command: z.string().optional(),
+    category: z.string().optional(),
+    name: z.string().optional(),
     check_only: z.boolean().optional().describe('Report {enabled} without executing'),
-    args: z.array(z.any()).optional().describe('Optional flat [key, value, key, value…] command arguments'),
+    args: z.union([z.array(z.any()), z.record(z.any())]).optional().describe('Object {Arg: value} (checked) or legacy flat [key, value, …]'),
   },
-  guard(({ check_only, ...a }) => call('command', { ...a, checkOnly: !!check_only })),
+  guard((a) => runCommand(call, a)),
 );
 
 server.tool(
   'live_list_commands',
-  'List Studio One commands available to live_command (about 1,000 on Studio One 5), optionally filtered by a substring. with_state adds whether each is enabled right now; many need a selection or an open editor.',
+  'Prefer live_find_command (ranked search with arguments). List Studio One commands available to live_command (about 1,000 on Studio One 5), optionally filtered by a substring. with_state adds whether each is enabled right now; many need a selection or an open editor.',
   { filter: z.string().optional(), with_state: z.boolean().optional() },
   guard(({ filter, with_state }) => call('listCommands', { filter, withState: !!with_state }, { timeoutMs: 15000 })),
+);
+
+server.tool(
+  'live_find_command',
+  'Search Studio One\'s ~1,400 commands (menus, context menus, Musical Functions, audio/track/event edits) in plain English or Spanish, e.g. "transponer una octava", "quantize 16ths", "duplicate track". Returns the best matches as Category/Name with a short argument summary; with_state adds whether each can run right now (many need a selection or open editor). Then use live_command_info for a command\'s full arguments and live_command to run it. The catalog is built from the running Studio One and cached; refresh rebuilds it.',
+  { query: z.string(), limit: z.number().int().min(1).max(50).optional(), with_state: z.boolean().optional(), refresh: z.boolean().optional() },
+  guard((a) => findCommand(call, a)),
+);
+
+server.tool(
+  'live_command_info',
+  'Full description of one Studio One command (Category/Name from live_find_command): its arguments with type, range, default, named choices (e.g. Mode: Add/Subtract | Set all to) and preset values, real examples from your macros, and whether it can run right now.',
+  { command: z.string() },
+  guard((a) => commandInfo(call, a)),
 );
 
 server.tool(
