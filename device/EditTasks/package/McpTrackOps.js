@@ -428,8 +428,10 @@ function mtoChordsIn(track, op) {
 	var list = mtoEvents(track), out = [];
 	for (var i = 0; i < list.length; i++) {
 		var info = mtoChordInfo(list[i]);
-		if (from !== null && info.end !== null && info.end <= from) continue;
-		if (to !== null && info.start !== null && info.start >= to) continue;
+		// 1 ms of slack: times are rounded, and a chord ending exactly where the range starts
+		// (or starting where it ends) must not count as overlapping.
+		if (from !== null && info.end !== null && info.end <= from + 0.001) continue;
+		if (to !== null && info.start !== null && info.start >= to - 0.001) continue;
 		out.push({ ev: list[i], info: info });
 	}
 	return out;

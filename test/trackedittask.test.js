@@ -455,3 +455,9 @@ test('chord ops report a missing chord track or removeEvent', () => {
   assert.equal(results[0].error, 'removing chord events is not available');
   assert.deepEqual(removed, []);
 });
+
+test('chords: a chord touching the range edge (rounded times) is not in the range', () => {
+  // Real times: G ends at 7.5789…s, read back rounded as 7.579; the range starts at 7.5789.
+  const { results } = runChords([{ op: 'chords', from: 1.9996, to: 4.0004 }]);
+  assert.deepEqual(results[0].chords.map((c) => c.name), ['G']);
+});
