@@ -779,18 +779,18 @@ server.tool(
 
 server.tool(
   'live_export',
-  "Export the running song's mixdown or stems to audio files through Studio One's own export (offline render; the export dialog flashes briefly; Windows only). kind mixdown|stems; range loop (between the loop locators), song (song start/end markers) or markers (one file per marker range); formats from wav, aif, flac, caf, m4a, ogg, opus, mp3 (mixdown: one or more, all exported; stems: one). Options you leave out keep what the dialog last used, and your export settings are put back afterwards. Stems include the channels ticked in Studio One's stems dialog (all by default; Studio One remembers that per song). Sample rate and bit depth are the dialog's last choice for that format. Files land in the song's Mixdown/Stems folder (existing files are never overwritten: Studio One adds (2)), or are moved to output (a folder, or a file path for a single mixdown). Returns the file paths and sizes. The song must have been saved once.",
+  "Export the running song's mixdown or stems to audio files through Studio One's own export (offline render; the export dialog flashes briefly; Windows only). kind mixdown|stems; range loop (between the loop locators), song (song start/end markers) or markers (one file per marker range); formats from wav, aif, flac, caf, m4a, ogg, opus, mp3 (mixdown: one or more, all exported; stems: one). Options you leave out keep what the dialog last used, and your export settings are put back afterwards. Stems include the channels ticked in Studio One's stems dialog (all by default; Studio One remembers that per song). Sample rate and bit depth are the dialog's last choice for that format. Files land in the song's Mixdown/Stems folder (existing files are never overwritten: Studio One adds (2)), or are moved to output (a folder, or a file path for a single mixdown). Returns the file paths and sizes. The song must have been saved once. Other Studio One tools wait while an export runs; realtime makes a stems export take as long as the range plays (raise timeout_s for long songs); import_to_track adds the exported audio to the song as a new track.",
   {
     kind: z.enum(['mixdown', 'stems']),
     range: z.enum(['loop', 'song', 'markers']).optional(),
     formats: z.array(z.string()).optional(),
-    import_to_track: z.boolean().optional(),
-    skip_master_fx: z.boolean().optional(),
-    write_tempo: z.boolean().optional(),
-    split_mono: z.boolean().optional(),
-    realtime: z.boolean().optional(),
-    output: z.string().optional(),
-    timeout_s: z.number().min(10).max(3600).optional(),
+    import_to_track: z.boolean().optional().describe('Import the exported file(s) back into the song: this adds a track to the song.'),
+    skip_master_fx: z.boolean().optional().describe("Export before the main bus's insert effects (Studio One's pre-master-FX option)."),
+    write_tempo: z.boolean().optional().describe("Write the song tempo into the audio file's metadata."),
+    split_mono: z.boolean().optional().describe('Stems only: split stereo channels into two mono files.'),
+    realtime: z.boolean().optional().describe('Stems only: render in real time; the export then takes as long as the range plays, so raise timeout_s for long songs.'),
+    output: z.string().optional().describe('Absolute path: a folder to move the files into, or a file path (its extension must match the format) for a single mixdown.'),
+    timeout_s: z.number().min(10).max(3600).optional().describe('How long the render may take, in seconds (default 600).'),
   },
   guard((a) => exportAudio(call, a)),
 );
