@@ -53,8 +53,24 @@ export async function runCommand(call, { command, category, name, args, check_on
   if (isObj && !entry) warnings = ['command not in the catalog: arguments not checked'];
   const payload = { category, name, checkOnly: !!check_only };
   if (flat !== undefined) payload.args = flat;
-  const result = await call('command', payload);
-  const out = { command: full, ...result };
+  let result;
+  try {
+    result = await call('command', payload);
+  } catch (e) {
+    // Studio One matches names exactly. A miss ("transport/start") is retried with the
+    // catalog's spelling, so correctly written commands never wait on the catalog.
+    if (entry || !/unknown command/i.test(String(e?.message))) throw e;
+    let catalog = null;
+    try { catalog = await get(call, {}); } catch { throw e; }
+    const fixed = findEntry(catalog, full);
+    if (!fixed || (fixed.category === category && fixed.name === name)) {
+      const near = searchCommands(catalog, full, { limit: 5 }).map((r) => r.command);
+      throw new Error(`no command ${full}${near.length ? `; closest: ${near.join(', ')}` : ''}`);
+    }
+    ({ category, name } = fixed);
+    result = await call('command', { ...payload, category, name });
+  }
+  const out = { command: `${category}/${name}`, ...result };
   if (warnings.length) out.warnings = warnings;
   if (result?.executed === false) out.note = 'not available in the current context (needs a selection or an open editor?)';
   return out;

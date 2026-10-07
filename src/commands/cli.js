@@ -94,7 +94,11 @@ export async function runCmd(argv, { call, getCatalog = realGetCatalog, out = co
         args = { ...args };
         for (const [k, v] of Object.entries(args)) {
           const a = entry?.args?.find((x) => x.name === k) ?? entry?.args?.find((x) => x.name.toLowerCase() === k.toLowerCase());
-          if ((!a || a.type === 'unknown') && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) args[k] = Number(v);
+          // Shell values are text. An argument of unknown type becomes a number only when
+          // every value your macros used for it was a number (Bars: 4); otherwise it stays
+          // text, so a name such as "2" is not turned into the number 2.
+          const numeric = a?.type === 'unknown' && a.examples?.length > 0 && a.examples.every((x) => typeof x === 'number');
+          if (numeric && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) args[k] = Number(v);
         }
       }
       try { r = await runCommand(call, { command: text, args, check_only: !!flags.check }, opts); }

@@ -88,15 +88,18 @@ test('--Name=value, boolean values, limit errors, empty displayName', async () =
   assert.equal(t2.logs[0], 'Transport/Start');
 });
 
-test('run: words after a flag are a usage error; numeric strings coerce for unknown-typed args', async () => {
+test('run: words after a flag are a usage error; unknown-typed args become numbers only with numeric macro examples', async () => {
   const t = mk();
   assert.equal(await runCmd(['run', 'Musical Functions/Transpose', '--Mode', 'Set', 'all', 'to'], { call: t.call, getCatalog, out: t.out }), 2);
   assert.match(t.errs[0], /quote multi-word/);
   const sent = [];
-  const gc = async () => ({ ...catalog, commands: [...catalog.commands, { command: 'X/Y', category: 'X', name: 'Y', displayName: '', args: [{ name: 'N', type: 'unknown' }] }] });
+  const gc = async () => ({ ...catalog, commands: [...catalog.commands, { command: 'X/Y', category: 'X', name: 'Y', displayName: '', variableArgs: true,
+    args: [{ name: 'N', type: 'unknown', examples: [1, 4] }, { name: 'Name', type: 'unknown', examples: ['VERSE 1'] }, { name: 'Other', type: 'unknown' }] }] });
   const t2 = mk(async (op, a) => { sent.push(a); return { executed: true }; });
-  await runCmd(['run', 'X/Y', '--N', '12'], { call: t2.call, getCatalog: gc, out: t2.out });
-  assert.deepEqual(sent.at(-1).args, ['N', 12]);
+  await runCmd(['run', 'X/Y', '--N', '12', '--Name', '2', '--Other', '3'], { call: t2.call, getCatalog: gc, out: t2.out });
+  assert.deepEqual(sent.at(-1).args, ['N', 12, 'Name', '2', 'Other', '3']);
+  await runCmd(['run', 'Z/Unknown', '--Name', '2'], { call: t2.call, getCatalog: gc, out: t2.out });
+  assert.deepEqual(sent.at(-1).args, ['Name', '2'], 'no catalog entry: text stays text');
 });
 
 test('refresh exits 1 when Studio One did not answer; find caps --limit at 50', async () => {

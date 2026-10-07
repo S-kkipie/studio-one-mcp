@@ -103,3 +103,25 @@ test('with_state stops after the first failure; enabled checks use a short timeo
   const info = await commandInfo(call, { command: 'Transport/Start' }, opts);
   assert.match(info.note, /could not ask Studio One/);
 });
+
+// Studio One matches command names exactly, like the bridge's findCommand.
+const exactBridge = () => fakeCall((op, a) => {
+  const known = catalog.commands.some((e) => e.category === a.category && e.name === a.name);
+  if (!known) throw new Error(`Studio One: unknown command: ${a.category}/${a.name} (see listCommands)`);
+  return { executed: true };
+});
+
+test('runCommand fixes the casing of a command without args, and only on a miss', async () => {
+  const call = exactBridge();
+  const r = await runCommand(call, { command: 'transport/start' }, opts);
+  assert.equal(r.command, 'Transport/Start');
+  assert.equal(r.executed, true);
+  assert.deepEqual(call.calls.map(([, a]) => `${a.category}/${a.name}`), ['transport/start', 'Transport/Start']);
+  const ok = exactBridge();
+  const boom = { getCatalog: async () => { throw new Error('catalog must not be read'); } };
+  assert.equal((await runCommand(ok, { command: 'Transport/Start' }, boom)).command, 'Transport/Start');
+});
+
+test('runCommand: an unknown command lists the closest ones', async () => {
+  await assert.rejects(runCommand(exactBridge(), { command: 'Transport/Strat' }, opts), /no command Transport\/Strat; closest: .*Transport\/Start/);
+});
