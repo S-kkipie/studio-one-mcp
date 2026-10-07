@@ -665,7 +665,7 @@ server.tool(
 
 server.tool(
   'live_plugin_window',
-  "Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close plug-in editor windows: closeAll closes every insert window and instrument editor, only one channel's insert windows with channel, or only one instrument's editor with instrument. Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own (instrument editors included); closeAll is for tidying up. Closing works on Windows only.",
+  "Open the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument; it gets the focus only when Studio One is not minimized), or close plug-in editor windows: closeAll closes every insert window and instrument editor, only one channel's insert windows with channel, or only one instrument's editor with instrument. Studio One may refuse track edits while a plug-in window is open; the track-edit retry closes plug-in and instrument editor windows on its own, so closeAll is for tidying up. Closing works on Windows only.",
   { action: z.enum(['open', 'closeAll']), channel: TARGET.channel, slot: TARGET.slot, instrument: TARGET.instrument },
   guard(async ({ action, channel, slot, instrument }) => {
     if (action === 'open') {
