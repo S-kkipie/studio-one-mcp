@@ -171,10 +171,25 @@ test('stateChange: units must match the catalog label, words to booleans, normal
   assert.equal(stateChange('2 kHz', hz, { binary: true }), '2 kHz');
   assert.equal(stateChange('Off'), false);
   assert.equal(stateChange('on'), true);
-  assert.equal(stateChange('Clean Channel'), 'Clean Channel');
+  assert.equal(stateChange('Clean Channel', undefined, { binary: true }), 'Clean Channel');
   assert.equal(stateChange(1, { min: false, max: true }), true);
   assert.equal(stateChange(1, { min: 0, max: 10 }), 1);
   assert.deepEqual(stateChange({ normalized: 0.5 }), { normalized: 0.5 });
+});
+
+test('stateChange: XML state refuses non-numeric text instead of writing it (live: "Clean" became Amp Type 0)', () => {
+  const enumP = { name: 'Amp Type', label: '', min: null, max: null, isDiscrete: true };
+  assert.throws(() => stateChange('Clean', enumP), {
+    message: `Amp Type takes a number in this plug-in's saved state (range not known: read the current value with live_plugin_params); "Clean" is not a number`,
+  });
+  assert.throws(() => stateChange('loud', { name: 'Input Gain', label: 'dB', min: -24, max: 24 }),
+    { message: `Input Gain takes a number in this plug-in's saved state (-24..24 dB); "loud" is not a number` });
+  assert.throws(() => stateChange('maybe', { name: 'Gate Active', min: false, max: true }),
+    { message: 'Gate Active takes on/off (or true/false, 1/0); "maybe" is not one of those' });
+  assert.throws(() => stateChange('Clean Channel'), /takes a number/);
+  assert.equal(stateChange('2', enumP), 2);
+  assert.equal(stateChange(2, enumP), 2);
+  assert.equal(stateChange('Clean', enumP, { binary: true }), 'Clean');
 });
 
 // A Track Edit fake for presets / insert / remove: results per op.

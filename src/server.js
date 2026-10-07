@@ -591,7 +591,7 @@ const PARAM_VALUE = z.union([z.string(), z.number(), z.boolean(), z.object({ nor
 
 server.tool(
   'live_set_plugin_param',
-  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in its own units, e.g. "6 dB" or "off"), normalized (0..1) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized }; for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
+  `Set plug-in parameters on a channel in the running Studio One (names or keys from live_plugin_params). One parameter: param plus exactly one of text (as displayed, e.g. "4.0:1", "-12 dB", "Standard"; for third-party plug-ins the value in its own units, e.g. "6 dB" or "off"; a choice such as an amp type is a number, as live_plugin_params shows it), normalized (0..1) or value (raw, within min..max). Several at once: changes { name: value } where value is text, a number (raw), a boolean or { normalized }; for third-party plug-ins a batch is one round-trip, so batch changes. Native results have before/after (set the "before" value to revert); state results list applied and missing. ${PLUGIN_NOTE}`,
   {
     channel: z.string(),
     slot: z.number().int(),

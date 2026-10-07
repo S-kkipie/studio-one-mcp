@@ -130,11 +130,23 @@ function inUnit(n, unit, param, key, text) {
   throw new Error(`${param?.name ?? key} is ${label ? `in ${label}` : 'unitless'}; "${text}" not understood`);
 }
 
+// Why non-numeric text cannot go into XML state: the plug-in would read it as some number
+// (live, Archetype took Amp Type "Clean" as 0), so it is refused with what is accepted.
+function notNumber(text, param, key, bool) {
+  const name = param?.name ?? key ?? 'This parameter';
+  if (bool) return `${name} takes on/off (or true/false, 1/0); "${text}" is not one of those`;
+  const range = param && typeof param.min === 'number' && typeof param.max === 'number'
+    ? `${param.min}..${param.max}${param.label ? ` ${param.label}` : ''}`
+    : 'range not known: read the current value with live_plugin_params';
+  return `${name} takes a number in this plug-in's saved state (${range}); "${text}" is not a number`;
+}
+
 /**
  * A change value for the state backend.
  *  - binary state (pedalboard): strings pass unchanged, so the plug-in's own text conversion is used;
  *  - XML state: text is on/off/true/false, or a number, optionally with the parameter's unit
  *    ("6 dB"; "2 kHz" -> 2000 for a Hz parameter); numbers must lie within the catalog min..max.
+ *    Other text is refused: the plug-in would read it as an arbitrary number.
  * Numbers 0/1 on a boolean parameter become booleans; { normalized } passes through.
  */
 export function stateChange(v, param, { binary = false, key } = {}) {
@@ -145,7 +157,7 @@ export function stateChange(v, param, { binary = false, key } = {}) {
     if (/^(true|on|yes)$/i.test(t)) return true;
     if (/^(false|off|no)$/i.test(t)) return false;
     const m = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*([a-z%°]*)$/i.exec(t);
-    if (!m) return v;
+    if (!m) throw new Error(notNumber(t, param, key, bool));
     v = m[2] ? inUnit(Number(m[1]), m[2], param, key, t) : Number(m[1]);
   }
   if (bool && typeof v === 'number' && (v === 0 || v === 1)) return v === 1;
