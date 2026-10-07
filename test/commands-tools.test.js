@@ -9,7 +9,7 @@ const catalog = {
       { name: 'Mode', type: 'int', min: 0, max: 1, choices: [{ value: 0, label: 'Add/Subtract' }, { value: 1, label: 'Set all to' }] },
       { name: 'AddValue', type: 'int', min: -64, max: 64 },
     ] },
-    { command: 'Transport/Start', category: 'Transport', name: 'Start', displayName: 'Start', args: [] },
+    { command: 'Transport/Start', category: 'Transport', name: 'Start', displayName: 'Start', args: [], variableArgs: false },
   ],
 };
 const opts = { getCatalog: async () => catalog };
@@ -59,4 +59,25 @@ test('runCommand works without a catalog', async () => {
 test('runCommand notes executed:false', async () => {
   const r = await runCommand(fakeCall({ executed: false }), { command: 'Transport/Start' }, opts);
   assert.match(r.note, /not available in the current context/);
+});
+
+test('runCommand with a legacy array or no args never touches the catalog', async () => {
+  const call = fakeCall({ executed: true });
+  const boom = { getCatalog: async () => { throw new Error('catalog must not be read'); } };
+  await runCommand(call, { command: 'Musical Functions/Transpose', args: ['Mode', 0] }, boom);
+  assert.deepEqual(call.calls[0][1].args, ['Mode', 0]);
+  await runCommand(call, { command: 'Transport/Start' }, boom);
+});
+
+test('runCommand rejects unknown arguments and args on zero-arg commands', async () => {
+  const call = fakeCall({ executed: true });
+  await assert.rejects(runCommand(call, { command: 'Musical Functions/Transpose', args: { Foo: 1 } }, opts), /unknown argument Foo/);
+  await assert.rejects(runCommand(call, { command: 'Transport/Start', args: { X: 1 } }, opts), /Transport\/Start takes no arguments/);
+  assert.equal(call.calls.length, 0);
+});
+
+test('runCommand check_only passes checkOnly: true', async () => {
+  const call = fakeCall({ enabled: true });
+  await runCommand(call, { command: 'Transport/Start', check_only: true }, opts);
+  assert.equal(call.calls[0][1].checkOnly, true);
 });

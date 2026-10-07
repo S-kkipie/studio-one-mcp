@@ -59,6 +59,10 @@ export function normalizeArgs(entry, args) {
   if (args === undefined) return { flat: undefined, warnings: [] };
   if (Array.isArray(args)) return { flat: args, warnings: [] };
   if (args === null || typeof args !== 'object') throw new Error('args must be an object or a flat array');
+  if (entry && !entry.variableArgs && !entry.args?.length) {
+    if (Object.keys(args).length) throw new Error(`${entry.command} takes no arguments`);
+    return { flat: [], warnings: [] };
+  }
   if (!entry?.args?.length) {
     return { flat: Object.entries(args).flat(), warnings: ['arguments not checked: no schema for this command'] };
   }

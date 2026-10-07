@@ -43,7 +43,9 @@ export async function runCommand(call, { command, category, name, args, check_on
   if (!category || !name) throw new Error('give command "Category/Name" or both category and name');
   const full = `${category}/${name}`;
   let entry = null;
-  try { entry = findEntry(await get(call, {}), full); } catch { entry = null; }
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    try { entry = findEntry(await get(call, {}), full); } catch { entry = null; }
+  }
   const { flat, warnings } = normalizeArgs(entry, args);
   const payload = { category, name, checkOnly: !!check_only };
   if (flat !== undefined) payload.args = flat;
