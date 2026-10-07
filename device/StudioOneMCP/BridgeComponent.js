@@ -271,6 +271,41 @@ class BridgeComponent extends PreSonus.ControlSurfaceComponent {
         return { name: slot.name, device: dev };
     }
 
+    // The slot's bank element and its component ("FXnn"). Studio One names the
+    // components in creation order, not by position (7.2.3): a plug-in inserted
+    // in front of another is FX02 while the older one, now second, stays FX01.
+    insertSlot(args) {
+        const c = this.channelByLabel(args.channel);
+        if (c.error) return c;
+        const slot = this.insertsOf(c.el).find(x => x.slot === args.slot);
+        if (!slot) return { error: "no plug-in in slot " + args.slot + " on " + args.channel };
+        const bank = this.subBank(c.el, "inserts");
+        const el = bank ? bank.getElement(args.slot) : null;
+        return { name: slot.name, el: el, comp: el ? el.component : null };
+    }
+
+    // { channel, slot } -> { name: "FXnn" }, the name the Track Edit slot commands take.
+    insertSlotName(args) {
+        const s = this.insertSlot(args);
+        if (s.error) return s;
+        const comp = s.comp;
+        const name = comp && typeof comp.name === "string" && comp.name !== "" ? comp.name : null;
+        if (!name) return { error: "cannot reach the plug-in in slot " + args.slot + " on " + args.channel };
+        return { channel: args.channel, slot: args.slot, plugin: s.name, name: name };
+    }
+
+    // Opens the slot's plug-in window and gives it the focus (what a surface's
+    // select button does in plug-in mode).
+    openPluginEditor(args) {
+        const s = this.insertSlot(args);
+        if (s.error) return s;
+        const utils = PreSonus.HostUtils;
+        if (!utils || typeof utils.openEditorAndFocus !== "function") return { error: "this Studio One cannot open plug-in editors from a script" };
+        if (!s.el || typeof s.el.isConnected !== "function" || !s.el.isConnected()) return { error: "cannot reach the plug-in in slot " + args.slot + " on " + args.channel };
+        utils.openEditorAndFocus(this, s.el, "Insert", false);
+        return { channel: args.channel, slot: args.slot, plugin: s.name, opened: true };
+    }
+
     paramInfo(p) {
         return {
             name: p.name,

@@ -68,12 +68,36 @@ const esc = (k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const escAttr = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 const unescAttr = (v) => v.replace(/&(quot|lt|gt|apos|amp);/g, (_m, n) => ({ quot: '"', lt: '<', gt: '>', apos: "'", amp: '&' })[n]);
 
+// Keys are a plain attribute name (its first occurrence in the document) or, for elements that
+// carry an id (JUCE APVTS: <PARAM id="gain" value="0.5"/>), "TAG[id=x]@attr" as the scanner writes them.
+const ID_KEY = /^([^\s[\]@]+)\[id=(.*)\]@([^\s[\]@=]+)$/;
+
+// [start, end) of the attribute value for `key`, or null.
+function locate(xml, key) {
+  const m = ID_KEY.exec(key);
+  if (!m) {
+    const r = new RegExp(`\\s${esc(key)}="([^"]*)"`).exec(xml);
+    return r ? { start: r.index + r[0].length - 1 - r[1].length, end: r.index + r[0].length - 1 } : null;
+  }
+  const [, tag, id, attr] = m;
+  const tagRe = new RegExp(`<${esc(tag)}(?=[\\s/>])[^>]*>`, 'g');
+  for (let t; (t = tagRe.exec(xml));) {
+    const idm = /\sid="([^"]*)"/.exec(t[0]);
+    if (!idm || unescAttr(idm[1]) !== id) continue;
+    const a = new RegExp(`\\s${esc(attr)}="([^"]*)"`).exec(t[0]);
+    if (!a) return null;
+    const end = t.index + a.index + a[0].length - 1;
+    return { start: end - a[1].length, end };
+  }
+  return null;
+}
+
 export function setXmlAttrs(xml, attrs) {
   const missing = [];
   let out = xml;
   for (const [k, v] of Object.entries(attrs)) {
-    const re = new RegExp(`(\\s${esc(k)}=")[^"]*(")`);
-    if (re.test(out)) out = out.replace(re, (_m, a, b) => a + escAttr(v) + b);
+    const at = locate(out, k);
+    if (at) out = out.slice(0, at.start) + escAttr(v) + out.slice(at.end);
     else missing.push(k);
   }
   return { xml: out, missing };
@@ -82,8 +106,8 @@ export function setXmlAttrs(xml, attrs) {
 export function getXmlAttrs(xml, keys) {
   const res = {};
   for (const k of keys) {
-    const m = new RegExp(`\\s${esc(k)}="([^"]*)"`).exec(xml);
-    res[k] = m ? unescAttr(m[1]) : null;
+    const at = locate(xml, k);
+    res[k] = at ? unescAttr(xml.slice(at.start, at.end)) : null;
   }
   return res;
 }

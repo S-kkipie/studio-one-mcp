@@ -199,7 +199,7 @@ export function fakeMixer(channels) {
       const device = it.params ? fakePlugin(it.params) : null;
       return {
         device,
-        component: device ? { name: 'FX01', find: (n) => (n === 'Device' ? device : null) } : undefined,
+        component: device || it.fx ? { name: it.fx || 'FX01', find: (n) => (n === 'Device' ? device : null) } : undefined,
         params: p, isConnected: () => true, getParamValue: (id) => p[id], setParamValue: (id, v) => ((p[id] = v), true),
         // Real sendPort values are list indexes (-1 for the default bus); the name is only display text.
         connectAliasParam: (alias, id) => (alias.string = display[id] ? display[id]() : String(p[id])),
@@ -252,7 +252,7 @@ export function loadCore({ host, config }) {
 
 // Load BridgeComponent.js the way Studio One does: include_file pulls in the
 // SDK (faked here), the generated BridgeConfig.js and BridgeCore.js.
-export function loadComponent({ host, config, mixer }) {
+export function loadComponent({ host, config, mixer, hostUtils }) {
   class ControlSurfaceComponent {
     onInit(hostComponent) {
       this.hostComponent = hostComponent;
@@ -262,7 +262,7 @@ export function loadComponent({ host, config, mixer }) {
   }
   const ctx = vm.createContext({
     Host: host.Host,
-    PreSonus: { ParamID, ControlSurfaceComponent },
+    PreSonus: hostUtils ? { ParamID, ControlSurfaceComponent, HostUtils: hostUtils } : { ParamID, ControlSurfaceComponent },
     include_file: (path) => {
       if (path.startsWith('resource://')) return;
       if (path === 'BridgeConfig.js') return vm.runInContext(`var BridgeConfig = ${JSON.stringify(config)};`, ctx);

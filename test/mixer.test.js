@@ -99,3 +99,40 @@ test('setPluginParam: by text, normalised or raw value; before/after; validation
   assert.match(ring('setPluginParam', { channel: 'Vox', slot: 0, param: 'gone', value: 1 }).error, /no parameter gone on Fat Channel/);
   assert.match(ring('setPluginParam', { channel: 'Vox', slot: 0, param: 'comp.ratio' }).error, /give one of/);
 });
+
+function slotSetup(hostUtils) {
+  const host = fakeHost();
+  const mixer = fakeMixer([
+    { label: 'Gtr', inserts: [{ name: 'Archetype Petrucci X', fx: 'FX02' }, { name: 'Pro EQ', fx: 'FX01' }, { name: 'Odd' }] },
+  ]);
+  const { component, params } = loadComponent({ host, config: { mailbox: MAILBOX }, mixer, hostUtils });
+  let n = 0;
+  const ring = (op, args) => {
+    host.client.write('request.json', { id: `s${++n}`, op, args });
+    component.paramChanged(params[0]);
+    return host.client.read('response.json');
+  };
+  return { ring, mixer, component };
+}
+
+test('insertSlotName: the FXnn name of the slot at a position (creation order, not position)', () => {
+  const { ring } = slotSetup();
+  assert.deepEqual(plain(ring('insertSlotName', { channel: 'Gtr', slot: 0 }).result), { channel: 'Gtr', slot: 0, plugin: 'Archetype Petrucci X', name: 'FX02' });
+  assert.equal(plain(ring('insertSlotName', { channel: 'Gtr', slot: 1 }).result).name, 'FX01');
+  assert.match(ring('insertSlotName', { channel: 'Gtr', slot: 2 }).error, /cannot reach the plug-in in slot 2/);
+  assert.match(ring('insertSlotName', { channel: 'Gtr', slot: 5 }).error, /no plug-in in slot 5 on Gtr/);
+  assert.match(ring('insertSlotName', { channel: 'Nope', slot: 0 }).error, /no channel named Nope/);
+});
+
+test('openPluginEditor: opens and focuses the slot editor through HostUtils; null-safe without it', () => {
+  const calls = [];
+  const { ring, mixer, component } = slotSetup({ openEditorAndFocus: (...a) => calls.push(a) });
+  assert.deepEqual(plain(ring('openPluginEditor', { channel: 'Gtr', slot: 1 }).result), { channel: 'Gtr', slot: 1, plugin: 'Pro EQ', opened: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], component);
+  assert.equal(calls[0][1], mixer.elements[0].banks.inserts.els[1]);
+  assert.deepEqual(calls[0].slice(2), ['Insert', false]);
+  assert.match(ring('openPluginEditor', { channel: 'Gtr', slot: 7 }).error, /no plug-in in slot 7/);
+  const bare = slotSetup();
+  assert.match(bare.ring('openPluginEditor', { channel: 'Gtr', slot: 0 }).error, /cannot open plug-in editors/);
+});

@@ -170,6 +170,8 @@ class Bridge {
             case "setAutomation": return this.fromComponent(c => c.setAutomation(args));
             case "pluginParams": return this.fromComponent(c => c.pluginParams(args));
             case "setPluginParam": return this.fromComponent(c => c.setPluginParam(args));
+            case "insertSlotName": return this.fromComponent(c => c.insertSlotName(args));
+            case "openPluginEditor": return this.fromComponent(c => c.openPluginEditor(args));
             case "eval": return this.evaluate(args);
             default: return fail("unknown op: " + op);
         }
