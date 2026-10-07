@@ -77,6 +77,21 @@ An independent project, not affiliated with or endorsed by PreSonus or Fender. S
 | `live_changes` | What changed in the song since the previous call: tracks added, removed, renamed or reordered, events on each track, mixer changes (levels, mute and solo, arm, monitor, automation mode, output, plug-ins), tempo, loop, markers and sections. It compares snapshots, so it sees what you did by hand as well, as net changes. |
 | `live_eval` | Run JavaScript inside Studio One to explore its object model. Opt-in only. |
 
+## Commands
+
+Studio One has well over a thousand commands. A searchable catalog of them (built from the live app, with macro examples and argument schemas merged in) backs three MCP tools: `live_find_command` (search by words, optionally with enabled state), `live_command_info` (arguments, choices, ranges, examples) and `live_command` (run one, or `check_only`).
+
+The same catalog is available from a terminal:
+
+```
+studio-one-mcp cmd find transpose [--limit N] [--state] [--json]
+studio-one-mcp cmd info Musical Functions/Transpose
+studio-one-mcp cmd run Musical Functions/Transpose --Mode Add/Subtract --AddValue 12 [--check]
+studio-one-mcp cmd refresh
+```
+
+Exit codes: 0 ok, 1 error or command not executed, 2 usage error. `--json` prints the raw result. Studio One must be running for live results; otherwise the cached or macro-only catalog is used.
+
 ## Plug-ins
 
 Studio One's scripting API sets a parameter by name only for PreSonus plug-ins, and it cannot list any plug-in's parameters. Third-party plug-ins are handled through a **catalog** made by scanning them outside Studio One. Each plug-in on a slot then gets one of three **backends**:

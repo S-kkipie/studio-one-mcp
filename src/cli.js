@@ -7,7 +7,8 @@ const usage = `studio-one-mcp            run the MCP server (stdio)
 studio-one-mcp setup      guided install: device, virtual MIDI port, MCP client
                           [--yes] [--dry-run] [--profile <dir>]
 studio-one-mcp doctor     check every link in the chain, with fixes
-studio-one-mcp uninstall  remove the bridge device [--profile <dir>]`;
+studio-one-mcp uninstall  remove the bridge device [--profile <dir>]
+studio-one-mcp cmd        search and run Studio One commands: find|info|run|refresh|help`;
 
 if (!cmd) {
   await import('./server.js');
@@ -18,6 +19,10 @@ if (!cmd) {
   const { doctor } = await import('./setup/doctor.js');
   const profile = rest.includes('--profile') ? rest[rest.indexOf('--profile') + 1] : undefined;
   process.exit(await doctor({ profile }));
+} else if (cmd === 'cmd') {
+  const { runCmd } = await import('./commands/cli.js');
+  const { call } = await import('./bridge.js');
+  process.exit(await runCmd(rest, { call }));
 } else if (cmd === 'uninstall') {
   const { uninstallDevice } = await import('./setup/device.js');
   const { studioOneProfiles } = await import('./paths.js');
