@@ -8,10 +8,12 @@ import path from 'node:path';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 import {
   pluginTarget, instrumentAt, getParams, setParams, stateChange, pluginPresets, instrumentsOverview, songInstrumentRouting,
+  pickBackend, instrumentClass, savedSynthClassId, presetListName,
 } from '../src/plugins/controller.js';
 import { findPresetFile, presetFileClassId } from '../src/plugins/presetfiles.js';
 import { loadablePreset } from '../src/plugins/state.js';
 import { addPlugin, addInstrumentTrack, addFxSend, INSTANCE_TIMEOUT_MS } from '../src/tracks.js';
+import { presetClass } from '../src/plugins.js';
 import { parseXml } from '../src/xml.js';
 
 const MAITAI = '{B625F134-4485-4A50-A3C8-C9CF0C5495E1}';
@@ -144,10 +146,23 @@ test('findPresetFile: plug-in folder under any vendor, case-insensitive name, Fo
   assert.equal(find('DEFAULT').file, path.join(factory, 'PreSonus', 'Mai Tai', 'default.preset'));
   assert.equal(find('Lead/Fat Bass').file, path.join(factory, 'PreSonus', 'Mai Tai', 'Lead', 'Fat Bass.preset'));
   assert.equal(find('Bass/Fat Bass').file, path.join(factory, 'PreSonus', 'Mai Tai', 'Bass', 'Fat Bass.preset'));
-  assert.equal(find('Nowhere/Fat Bass').file, path.join(factory, 'PreSonus', 'Mai Tai', 'Bass', 'Fat Bass.preset'), 'an unknown folder prefix falls back to the name');
+  // One name, several files in one root: refused, listing them relative to the root, until Folder/Name picks one.
+  assert.throws(() => find('Fat Bass'), {
+    message: `preset "Fat Bass" matches 2 files in ${factory}: PreSonus/Mai Tai/Bass/Fat Bass.preset, PreSonus/Mai Tai/Lead/Fat Bass.preset; pass preset as Folder/Name to pick one ("Bass/Fat Bass" or "Lead/Fat Bass")`,
+  });
+  assert.throws(() => find('Nowhere/Fat Bass'), /matches 2 files/, 'an unknown folder prefix does not pick one');
   assert.equal(find('Kick'), null, 'another class is skipped');
   assert.equal(find('Kick', { cid: null }).ext, '.preset');
   assert.deepEqual(find('my pad'), { file: path.join(user, 'User Presets', 'mai tai', 'My Pad.instrument'), ext: '.instrument' });
+  // The user's folders win over factory ones, whatever the extension.
+  put(path.join(user, 'Mine', 'Mai Tai', 'default.instrument'), Buffer.from('x'));
+  assert.deepEqual(find('default'), { file: path.join(user, 'Mine', 'Mai Tai', 'default.instrument'), ext: '.instrument' });
+  // Same name, same folder, two extensions: refused too; "./Name" picks the one directly in the plug-in folder.
+  put(path.join(factory, 'PreSonus', 'Mai Tai', 'Pad.preset'), presetZip(MAITAI, 'Mai Tai'));
+  put(path.join(factory, 'PreSonus', 'Mai Tai', 'Pad.fxpreset'), Buffer.from(`<AudioEffectPreset cid="${MAITAI}"/>`));
+  put(path.join(factory, 'PreSonus', 'Mai Tai', 'Lead', 'Lead Pad.preset'), presetZip(MAITAI, 'Mai Tai'));
+  assert.throws(() => find('Pad'), /matches 2 files .*PreSonus\/Mai Tai\/Pad\.fxpreset, PreSonus\/Mai Tai\/Pad\.preset/);
+  assert.equal(find('./default', { roots: roots.slice(1) }).file, path.join(factory, 'PreSonus', 'Mai Tai', 'default.preset'));
   assert.equal(find('My Pad', { exts: ['.preset', '.vstpreset'] }), null);
   assert.equal(find('Gone'), null);
   const vst = findPresetFile({ folder: 'VST Synth', preset: 'Init', cid: '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}', roots });
@@ -376,4 +391,59 @@ test('addFxSend: 30 s answer time; a timed-out add with a new FX channel is a su
   assert.match(r.warning, /did not answer in time/);
   labels = ['Voc', 'Main'];
   await assert.rejects(addFxSend(mk(false), { channel: 'Voc', plugin: 'Room Reverb' }), /did not answer/);
+});
+
+// ---- fix round 1: unnamed and renamed instruments, Folder/Name loads -------------------------------
+
+test('an instrument without a name: addressable as InstNN, opaque, never a crash', async () => {
+  const { call } = bridge({ instruments: [{ index: 1, component: 'Inst01', name: null }, { index: 2, component: 'Inst02', name: 'Mai Tai' }] });
+  assert.equal((await instrumentAt(call, 'Inst01')).component, 'Inst01');
+  assert.equal((await instrumentAt(call, 'mai tai')).component, 'Inst02');
+  await assert.rejects(instrumentAt(call, 'null'), /no instrument named null \(have: \(no name\) \[Inst01\], Mai Tai \[Inst02\]\)/);
+  await assert.rejects(instrumentAt(call, ''), /give an instrument name or component/);
+  assert.deepEqual(pickBackend(null, catalog, { discover, pluginClass }), { backend: 'opaque', entry: null, reason: 'unnamed' });
+  assert.equal(presetClass(null), null);
+  const g = await getParams(call, { instrument: 'Inst01' }, { catalog, discover, pluginClass, presetClass: () => null, zip: null });
+  assert.deepEqual([g.instrument, g.backend], ['Inst01', 'opaque']);
+  assert.match(g.note, /no name/);
+  const o = await instrumentsOverview(bridge({ instruments: [{ index: 1, component: 'Inst01', name: null }], extra: { tracks: () => [], song: () => ({ fileUrl: null }) } }).call,
+    { catalog, discover, pluginClass, presetClass: () => null });
+  assert.deepEqual(o.instruments, [{ instrument: null, component: 'Inst01', backend: 'opaque', classId: null, tracks: [] }]);
+});
+
+test('a renamed instrument: its class comes from the saved synth state, and lookups use the class name', async () => {
+  const zip = {
+    names: ['Presets/Synths/1 - Lead.fxpreset', 'Presets/Synths/2 - Other.vstpreset'],
+    raw: (n) => (n.endsWith('.fxpreset') ? Buffer.from(`<AudioEffectPreset cid="${MAITAI}" version="2"/>`) : vstpreset('ABCDEF019182FAEB4E4453504E4A5058')),
+  };
+  assert.equal(savedSynthClassId(zip, 1), MAITAI);
+  assert.equal(savedSynthClassId(zip, 2), '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}');
+  assert.equal(savedSynthClassId(zip, 3), null);
+  const noName = { pluginClass: () => null, presetClass: () => null, classes: () => [], presetClassById: (cid) => (cid === MAITAI ? { classId: MAITAI, className: 'Mai Tai' } : null) };
+  assert.deepEqual(await instrumentClass(null, { index: 1, name: 'Lead' }, { ...noName, zip }), { cid: MAITAI, className: 'Mai Tai' });
+  assert.deepEqual(await instrumentClass(null, { index: 2, name: 'Other' }, { ...noName, zip, classes: () => [{ cid: '{abcdef01-9182-faeb-4e44-53504e4a5058}', name: 'VST Synth' }] }),
+    { cid: '{ABCDEF01-9182-FAEB-4E44-53504E4A5058}', className: 'VST Synth' });
+  assert.equal(await instrumentClass(null, { index: 5, name: 'Gone' }, { ...noName, zip }), null);
+
+  const { call, log } = bridge({ instruments: [{ index: 1, component: 'Inst01', name: 'Lead' }] });
+  const r = await getParams(call, { instrument: 'Lead', filter: 'cutoff' }, { catalog, discover, ...noName, zip });
+  assert.deepEqual([r.instrument, r.backend], ['Lead', 'native'], 'Mai Tai names, found by the class name');
+  assert.deepEqual(log.find(([op]) => op === 'pluginParams')[1], { instrument: 'Inst01', names: ['filter.cutoff'] });
+  const a = loadDeps({ file: 'x', ext: '.preset' }, { ...noName, zip, classIdFor: () => null });
+  a.deps.findFile = (q) => { a.loads.query = q; return null; };
+  await assert.rejects(pluginPresets(call, { instrument: 'Lead', action: 'load', preset: 'default' }, a.deps), /preset file not found/);
+  assert.deepEqual([a.loads.query.folder, a.loads.query.cid], ['Mai Tai', MAITAI]);
+});
+
+test('preset load with Folder/Name: the list is checked by the name, the file by the folder', async () => {
+  assert.deepEqual([presetListName('Send FX/Arena'), presetListName('./Arena'), presetListName('Arena')], ['Arena', 'Arena', 'Arena']);
+  const { call } = bridge({ racks: { Voc: ['Pro EQ'] } });
+  const a = loadDeps(null);
+  const r = await pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Drums/Kick' }, a.deps);
+  assert.equal(a.loads.query.preset, 'Drums/Kick');
+  assert.deepEqual(a.replaced, [{ channel: 'Voc', slot: 0, cid: MAITAI, preset: 'Kick' }], 'the replace takes the listed name');
+  assert.equal(r.inPlace, false);
+  const b = loadDeps(() => { throw new Error('preset "Kick" matches 2 files'); });
+  await assert.rejects(pluginPresets(call, { channel: 'Voc', slot: 0, action: 'load', preset: 'Kick' }, b.deps), /matches 2 files/);
+  assert.equal(b.replaced.length, 0, 'an ambiguous name never falls back to a replace');
 });

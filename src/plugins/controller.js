@@ -22,10 +22,10 @@ import { openSongArchive } from '../song.js';
 import { walk } from '../xml.js';
 import { fileURLToPath } from 'node:url';
 import * as presetio from './presetio.js';
-import { getXmlAttrs } from './vstpreset.js';
+import { getXmlAttrs, parseVstPreset } from './vstpreset.js';
 import { closePluginWindows } from './windows.js';
-import { classIdFor, findPluginClass } from './classes.js';
-import { pluginParamNames, presetClass } from '../plugins.js';
+import { classIdFor, findPluginClass, loadPluginClasses } from './classes.js';
+import { pluginParamNames, presetClass, presetClassById } from '../plugins.js';
 import { listPresets, insertPreset, addPlugin, slotCommand, INSTANCE_TIMEOUT_MS } from '../tracks.js';
 
 const SCAN_HINT = 'run live_plugin_scan (it needs `npm run scan:setup` once)';
@@ -45,6 +45,8 @@ export function serialized(fn) {
 // first, so a catalog entry can never capture a PreSonus plug-in. `pluginClass(name)` is Studio One's
 // own class entry for the name; its file tells whether an unscanned plug-in is a VST3.
 export function pickBackend(insertName, catalog, { discover = pluginParamNames, pluginClass = findPluginClass } = {}) {
+  // Studio One reported no name (an instrument whose device has no title): nothing to look it up by.
+  if (insertName == null || insertName === '') return { backend: 'opaque', entry: null, reason: 'unnamed' };
   const { names } = discover(insertName);
   if (names.length) return { backend: 'native', entry: null, names };
   const entry = catalog ? matchPlugin(catalog, insertName) : null;
@@ -70,6 +72,7 @@ export function opaqueMessage(name, { reason, entry } = {}) {
     const why = String(entry?.scanError || '').split(/\r?\n|\|/)[0].slice(0, 160);
     return `${name} could not be scanned (${why}); re-run live_plugin_scan to try again, or use live_plugin_presets to load a preset instead`;
   }
+  if (reason === 'unnamed') return 'Studio One reports no name for this plug-in, so its parameters cannot be looked up; use live_plugin_presets to load a preset instead';
   if (reason === 'unscanned') return `${name} is not in the plug-in catalog: ${SCAN_HINT}, or use live_plugin_presets to load a preset instead`;
   if (reason === 'unsupported') return `${name} is not supported for parameter control (only VST3 plug-ins are scanned); use live_plugin_presets to load a preset instead`;
   if (reason === 'noState') return `${name}'s parameters could not be mapped to its saved state; use live_plugin_presets to load a preset instead`;
@@ -106,13 +109,15 @@ const isInst = (t) => t != null && t.instrument !== undefined;
 export async function instrumentAt(call, ref) {
   const list = await listInstruments(call);
   const want = String(ref ?? '').trim();
-  const have = () => (list.length ? ` (have: ${list.map((x) => `${x.name} [${x.component}]`).join(', ')})` : ' (the song has no instruments)');
+  const have = () => (list.length ? ` (have: ${list.map((x) => `${x.name ?? '(no name)'} [${x.component}]`).join(', ')})` : ' (the song has no instruments)');
+  const lower = (t) => String(t ?? '').toLowerCase();
   if (/^inst\d+$/i.test(want)) {
-    const hit = list.find((x) => x.component.toLowerCase() === want.toLowerCase());
+    const hit = list.find((x) => lower(x.component) === want.toLowerCase());
     if (hit) return hit;
   }
-  let hits = list.filter((x) => x.name === want);
-  if (!hits.length) hits = list.filter((x) => x.name.toLowerCase() === want.toLowerCase());
+  if (!want) throw new Error(`give an instrument name or component${have()}`);
+  let hits = list.filter((x) => x.name != null && x.name === want);
+  if (!hits.length) hits = list.filter((x) => x.name != null && lower(x.name) === want.toLowerCase());
   if (hits.length === 1) return hits[0];
   if (hits.length > 1) throw new Error(`instrument ${want} is ambiguous: ${hits.map((x) => x.component).join(', ')}; give the component (e.g. ${hits[0].component})`);
   throw new Error(`no instrument named ${want}${have()}`);
@@ -120,13 +125,69 @@ export async function instrumentAt(call, ref) {
 
 // The addressed plug-in -> { target (for the bridge and state ops), head (for results), name }.
 // An instrument is addressed by its component, so a rename or a twin cannot redirect the call.
-async function resolvePlugin(call, target) {
+async function resolvePlugin(call, target, deps = {}) {
   if (isInst(target)) {
     const inst = await instrumentAt(call, target.instrument);
-    return { target: { instrument: inst.component }, head: { instrument: inst.name, component: inst.component }, name: inst.name, instrument: true };
+    const cls = await instrumentClass(call, inst, deps);
+    return {
+      target: { instrument: inst.component }, head: { instrument: inst.name ?? inst.component, component: inst.component },
+      name: inst.name, instrument: true, cls,
+      // A renamed instrument is looked up by its class name (its presets and catalog entry are filed under it).
+      lookupName: cls?.className ?? inst.name,
+    };
   }
   const plug = await insertAt(call, target.channel, target.slot);
-  return { target: { channel: target.channel, slot: target.slot }, head: { channel: target.channel, slot: target.slot }, name: plug.name, instrument: false };
+  return { target: { channel: target.channel, slot: target.slot }, head: { channel: target.channel, slot: target.slot }, name: plug.name, lookupName: plug.name, instrument: false };
+}
+
+// The class of the song's instrument N, from the song file's last save: Presets/Synths/<N> - <title>.fxpreset
+// (cid attribute) or .vstpreset (header). -> class ID or null.
+export function savedSynthClassId(zip, index) {
+  const name = (zip?.names || []).find((n) => {
+    const m = /^Presets\/Synths\/(\d+) - .+\.(fxpreset|vstpreset)$/i.exec(n);
+    return m && Number(m[1]) === Number(index);
+  });
+  if (!name) return null;
+  const raw = zip.raw(name);
+  if (!raw) return null;
+  try {
+    if (/\.vstpreset$/i.test(name)) {
+      const h = String(parseVstPreset(Buffer.from(raw)).classId).toUpperCase();
+      return /^[0-9A-F]{32}$/.test(h) ? `{${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}}` : null;
+    }
+    return (/<AudioEffectPreset[^>]*\scid="([^"]+)"/.exec(Buffer.from(raw).toString('utf8')) || [])[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function songArchive(call, openArchive = openSongArchive) {
+  const { fileUrl } = await call('song');
+  const songPath = fileUrl ? fileURLToPath(fileUrl) : null;
+  if (!songPath || !/\.song$/i.test(songPath)) return null;
+  return openArchive(songPath);
+}
+
+/**
+ * An instrument's class -> { cid, className } or null: by its title (Studio One's plug-in cache, else the
+ * plug-in's own presets: the cache leaves out the built-in instruments), else, for a renamed instrument,
+ * from the song's last save (the saved synth state names the class; its presets or the cache name it).
+ * `deps.zip`: a song archive already open (or a function giving one).
+ */
+export async function instrumentClass(call, inst, deps = {}) {
+  const byCache = (deps.pluginClass ?? findPluginClass)(inst.name);
+  if (byCache?.cid) return { cid: byCache.cid, className: byCache.name ?? inst.name };
+  const byPresets = (deps.presetClass ?? presetClass)(inst.name);
+  if (byPresets?.classId) return { cid: byPresets.classId, className: byPresets.className ?? inst.name };
+  let zip = null;
+  try {
+    zip = typeof deps.zip === 'function' ? await deps.zip() : deps.zip !== undefined ? deps.zip : await songArchive(call, deps.openArchive);
+  } catch { zip = null; }
+  const cid = savedSynthClassId(zip, inst.index);
+  if (!cid) return null;
+  const named = (deps.classes ?? loadPluginClasses)().find((c) => String(c.cid).toLowerCase() === cid.toLowerCase())?.name
+    ?? (deps.presetClassById ?? presetClassById)(cid)?.className ?? null;
+  return { cid, className: named };
 }
 
 // Bridge results name an instrument by the component we sent; show its name instead.
@@ -164,11 +225,11 @@ const matches = (filter, ...texts) => !filter || texts.some((t) => String(t ?? '
 export async function getParams(call, args, deps) {
   const d = defaults(deps);
   const { filter, params } = args;
-  const p = await resolvePlugin(call, pluginTarget(args));
+  const p = await resolvePlugin(call, pluginTarget(args), d);
   // Explicit names go straight to Studio One (the native path), whatever the plug-in.
   if (params?.length) return { ...relabel(await call('pluginParams', { ...p.target, names: params }), p), backend: 'native', realtime: true };
-  const b = pickBackend(p.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
-  const head = { ...p.head, plugin: p.name, backend: b.backend };
+  const b = pickBackend(p.lookupName, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
+  const head = { ...p.head, plugin: p.name ?? p.lookupName, backend: b.backend };
   if (b.backend === 'native') {
     const want = b.names.filter((n) => matches(filter, n));
     if (!want.length) return { ...head, realtime: true, params: [], note: `no parameter name contains "${filter}"` };
@@ -176,7 +237,7 @@ export async function getParams(call, args, deps) {
     // Discovered names the plug-in does not answer to are noise (other versions, UI state).
     return { ...head, plugin: r.plugin ?? p.name, realtime: true, params: r.params };
   }
-  if (b.backend === 'opaque') return { ...head, realtime: false, params: [], note: opaqueMessage(p.name, b) };
+  if (b.backend === 'opaque') return { ...head, realtime: false, params: [], note: opaqueMessage(p.name ?? p.head.instrument, b) };
 
   const entry = b.entry;
   const keys = entry.stateKeys || {};
@@ -294,9 +355,9 @@ async function setParamsNow(call, args, deps) {
   const { changes } = args;
   const list = Object.entries(changes || {});
   if (!list.length) throw new Error('no changes given');
-  const p = await resolvePlugin(call, pluginTarget(args));
-  const plug = { name: p.name };
-  const b = pickBackend(plug.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
+  const p = await resolvePlugin(call, pluginTarget(args), d);
+  const plug = { name: p.name ?? p.head.instrument };
+  const b = pickBackend(p.lookupName, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
   if (b.backend === 'opaque') throw new Error(opaqueMessage(plug.name, b));
   if (b.backend === 'native') {
     const results = [];
@@ -353,16 +414,19 @@ async function pluginPresetsNow(call, args, deps = {}) {
     if (!preset) throw new Error('load needs preset (a name from action list)');
   }
   if (!target && !plugin) throw new Error('give channel and slot, instrument, or plugin');
-  const p = target ? await resolvePlugin(call, target) : null;
-  const name = p ? p.name : plugin;
-  const cid = classOf(name, d);
+  const p = target ? await resolvePlugin(call, target, d) : null;
+  const name = p ? p.name ?? p.head.instrument : plugin;
+  // An instrument's class comes with it (also for a renamed one); otherwise by name.
+  const cid = p?.instrument ? p.cls?.cid ?? classOf(p.lookupName ?? name, d) : classOf(name, d);
   const presets = (await listPresets(call, cid)).presets || [];
   if (action === 'list') return { ...(p ? p.head : {}), plugin: name, cid, count: presets.length, presets: presets.map((x) => x.name) };
   if (action !== 'load') throw new Error('action must be list or load');
-  if (!presets.some((x) => x.name === preset)) throw new Error(`${name} has no preset named "${preset}" (action list shows them)`);
+  // "Folder/Name" (or "./Name") picks one of several files with the same name; the list has the name.
+  const listed = presetListName(preset);
+  if (!presets.some((x) => x.name === listed)) throw new Error(`${name} has no preset named "${listed}" (action list shows them)`);
 
   // The plug-in's folder is its class name ("Mai Tai" for "Mai Tai 2").
-  const folder = d.pluginClass(name)?.name ?? (d.presetClass ?? presetClass)(name)?.className ?? String(name).replace(/\s+\d+$/, '');
+  const folder = (p?.instrument ? p.cls?.className : null) ?? d.pluginClass(name)?.name ?? (d.presetClass ?? presetClass)(name)?.className ?? String(name).replace(/\s+\d+$/, '');
   const found = d.platform === 'win32' ? d.findFile({ folder, preset, cid, exts: p.instrument ? null : ['.preset', '.vstpreset', '.fxpreset'] }) : null;
   if (found) {
     const { ext, buf } = loadablePreset(found.ext, fs.readFileSync(found.file), { instrument: p.instrument, cls: { cid, name: folder } });
@@ -381,7 +445,7 @@ async function pluginPresetsNow(call, args, deps = {}) {
       : "an instrument's preset can only be loaded on Windows (through its Load Preset File dialog)");
   }
   const { channel, slot } = p.target;
-  const r = await d.replace(call, { channel, slot, cid, preset }, d.closeWindows ? { closeWindows: d.closeWindows } : undefined);
+  const r = await d.replace(call, { channel, slot, cid, preset: listed }, d.closeWindows ? { closeWindows: d.closeWindows } : undefined);
   return {
     channel, slot, plugin: r.plugin ?? name, preset, slotName: r.slotName, bypassed: r.bypassed, backend: 'preset', realtime: false, inPlace: false,
     ...(r.warning ? { warning: r.warning } : {}),
@@ -470,11 +534,15 @@ export async function instrumentsOverview(call, deps = {}) {
   const tracks = ((await call('tracks', { events: false }).catch(() => [])) || []).filter((t) => t.mediaType === 'Music');
   let routing = new Map();
   let routingNote = null;
+  let zipOnce;
   try {
     const { fileUrl } = await call('song');
     const songPath = fileUrl ? fileURLToPath(fileUrl) : null;
-    if (songPath && /\.song$/i.test(songPath)) routing = songInstrumentRouting(openArchive(songPath));
-    else routingNote = 'the song has not been saved yet, so tracks are not mapped';
+    if (songPath && /\.song$/i.test(songPath)) {
+      const z = openArchive(songPath);
+      zipOnce = Promise.resolve(z);
+      routing = songInstrumentRouting(z);
+    } else routingNote = 'the song has not been saved yet, so tracks are not mapped';
   } catch (e) {
     routingNote = `tracks could not be mapped (${e.message})`;
   }
@@ -483,25 +551,32 @@ export async function instrumentsOverview(call, deps = {}) {
   for (const t of tracks) {
     const r = routing.get(t.channel ?? t.name);
     // The saved number and name must both match; a name alone counts only when it is unique.
-    let hit = r ? list.find((x) => x.index === r.index && x.name === r.name) : null;
+    let hit = r ? list.find((x) => x.index === r.index && x.name != null && x.name === r.name) : null;
     if (!hit && r) {
-      const same = list.filter((x) => x.name === r.name);
+      const same = list.filter((x) => x.name != null && x.name === r.name);
       if (same.length === 1) hit = same[0];
     }
     if (hit) byInst.get(hit.component).push(t.name);
     else unmapped.push(t.name);
   }
-  const instruments = list.map((x) => {
-    const b = pickBackend(x.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
-    const classId = d.pluginClass(x.name)?.cid ?? (d.presetClass ?? presetClass)(x.name)?.classId ?? null;
-    return { instrument: x.name, component: x.component, backend: b.backend, classId, tracks: byInst.get(x.component) };
-  });
+  // The song is opened at most once (already above, for the tracks); an instrument needs it only when its
+  // title does not name its class.
+  const zip = () => (zipOnce ??= songArchive(call, openArchive).catch(() => null));
+  const instruments = [];
+  for (const x of list) {
+    const cls = await instrumentClass(call, x, { ...d, zip });
+    const b = pickBackend(cls?.className ?? x.name, d.catalog, { discover: d.discover, pluginClass: d.pluginClass });
+    instruments.push({ instrument: x.name ?? null, component: x.component, backend: b.backend, classId: cls?.cid ?? null, tracks: byInst.get(x.component) });
+  }
   return {
     instruments,
     ...(unmapped.length ? { unmappedTracks: unmapped } : {}),
     note: routingNote ?? "tracks are read from the song's last save: a track added or rerouted since then is listed in unmappedTracks (save the song to map it).",
   };
 }
+
+// The name in Studio One's preset list for a preset given as "Folder/Name", "./Name" or "Name".
+export const presetListName = (preset) => String(preset ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 // Runs a Presets command ("Export Preset" | "Load Preset File") on an insert ({ channel, slot }) or an
 // instrument ({ instrument }). The bridge checks availability first. It blocks while the file dialog is

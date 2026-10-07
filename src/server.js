@@ -643,11 +643,11 @@ server.registerTool(
 server.registerTool(
   'live_plugin_presets',
   {
-    description: "Presets Studio One has indexed for a plug-in: list for an insert (channel + slot), an instrument (instrument, from live_instruments) or a plug-in by name (plugin); load onto an insert or an instrument. On Windows a load finds the preset's file (Studio One's Presets folders, Documents/Studio One/Presets, VST3 preset folders) and loads it in place through the plug-in's own Load Preset File: same instance, slot and bypass, the song is not saved, Studio One's preset dialog flashes briefly (inPlace: true). An instrument only ever gets its synth's part of a preset: its channel's inserts stay as they are. If no file is found, an insert is replaced by a new instance made from the preset at the same position (bypass kept; inPlace: false), and an instrument load fails. Do NOT use live_undo to revert a preset load (an in-place load is not an undo step; after a replace it would bring the old instance back next to the new one): load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
+    description: "Presets Studio One has indexed for a plug-in: list for an insert (channel + slot), an instrument (instrument, from live_instruments) or a plug-in by name (plugin); load onto an insert or an instrument. On Windows a load finds the preset's file (Studio One's Presets folders, Documents/Studio One/Presets, VST3 preset folders) and loads it in place through the plug-in's own Load Preset File: same instance, slot and bypass, the song is not saved, Studio One's preset dialog flashes briefly (inPlace: true). An instrument only ever gets its synth's part of a preset: its channel's inserts stay as they are. The user's preset folders win over factory ones; several files with the same name in one folder tree are refused with the candidates, to be picked as Folder/Name. If no file is found, an insert is replaced by a new instance made from the preset at the same position (bypass kept; inPlace: false), and an instrument load fails. Do NOT use live_undo to revert a preset load (an in-place load is not an undo step; after a replace it would bring the old instance back next to the new one): load the previous preset instead. To add a new plug-in with a preset, use live_add_plugin with preset.",
     inputSchema: targeted({
       action: z.enum(['list', 'load']),
       plugin: z.string().optional().describe('For list without a target: plug-in name as in live_plugins'),
-      preset: z.string().optional().describe('For load: exact preset name from list'),
+      preset: z.string().optional().describe('For load: exact preset name from list; Folder/Name (or ./Name) when the load says several files share the name'),
     }, { optional: true }),
   },
   guard((a) => pluginPresets(call, a)),
@@ -662,7 +662,7 @@ server.tool(
 
 server.tool(
   'live_plugin_window',
-  'Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close all insert plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only, and for insert windows only: close an instrument editor in Studio One.',
+  'Open (and focus) the editor window of a plug-in (an insert: channel + slot; or an instrument: instrument), or close all insert plug-in editor windows (optionally only those of one channel). Studio One cannot run track edits while a plug-in window is open, so the tools that need that close them on their own; closeAll is for tidying up. Closing works on Windows only, and for insert windows only. Track edits are refused while an instrument editor is open, and closeAll does not close it: the user must close it in Studio One.',
   { action: z.enum(['open', 'closeAll']), channel: TARGET.channel, slot: TARGET.slot, instrument: TARGET.instrument },
   guard(async ({ action, channel, slot, instrument }) => {
     if (action === 'open') {

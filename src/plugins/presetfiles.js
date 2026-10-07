@@ -15,17 +15,20 @@ import { parseVstPreset } from './vstpreset.js';
 
 const S1_EXTS = ['.preset', '.vstpreset', '.fxpreset', '.instrument'];
 const VST3_EXTS = ['.vstpreset'];
-// When one name has several files: the one that needs no repacking first.
-const EXT_RANK = { '.preset': 0, '.vstpreset': 1, '.fxpreset': 2, '.instrument': 3 };
 
-// -> [{ dir, exts }]: the user's Studio One presets first, then the install's, then VST3 folders.
+// -> [{ dir, exts }] in precedence order: the user's folders (Documents/Studio One/Presets, Documents/VST3
+// Presets) before the factory ones (the install's Presets, Common Files/VST3 Presets).
 export function presetFileRoots() {
   const out = presetRoots().map((dir) => ({ dir, exts: S1_EXTS }));
-  if (process.env.STUDIO_ONE_PRESETS) return out;
-  const vst3 = [path.join(os.homedir(), 'Documents', 'VST3 Presets')];
-  if (process.platform === 'win32') vst3.push(path.join(process.env.CommonProgramFiles || 'C:\\Program Files\\Common Files', 'VST3 Presets'));
-  else vst3.push('/Library/Audio/Presets', path.join(os.homedir(), 'Library/Audio/Presets'));
-  return [...out, ...vst3.filter((d) => fs.existsSync(d)).map((dir) => ({ dir, exts: VST3_EXTS }))];
+  if (!process.env.STUDIO_ONE_PRESETS) {
+    const vst3 = [path.join(os.homedir(), 'Documents', 'VST3 Presets')];
+    if (process.platform === 'win32') vst3.push(path.join(process.env.CommonProgramFiles || 'C:\\Program Files\\Common Files', 'VST3 Presets'));
+    else vst3.push(path.join(os.homedir(), 'Library/Audio/Presets'), '/Library/Audio/Presets');
+    out.push(...vst3.filter((d) => fs.existsSync(d)).map((dir) => ({ dir, exts: VST3_EXTS })));
+  }
+  const home = path.resolve(os.homedir()).toLowerCase();
+  const isUser = (r) => path.resolve(r.dir).toLowerCase().startsWith(home + path.sep) ? 0 : 1;
+  return out.map((r, i) => [r, i]).sort((x, y) => (isUser(x[0]) - isUser(y[0])) || (x[1] - y[1])).map(([r]) => r);
 }
 
 const lc = (s) => String(s).toLowerCase();
@@ -66,37 +69,47 @@ export function presetFileClassId(file) {
 }
 
 /**
- * The file of preset `preset` (a name from the preset list; "Folder/Name" prefers the file in that
- * subfolder) of the plug-in whose folder is `folder` (its class name, e.g. "Mai Tai").
- * `cid`: files that name another class are skipped. `exts`: only these extensions.
+ * The file of preset `preset` (a name from the preset list) of the plug-in whose folder is `folder` (its
+ * class name, e.g. "Mai Tai"). Roots are searched in order and the first root with a match decides,
+ * whatever the extension, so the user's own presets win over factory ones of the same name. Within that
+ * root the name must be one file: several (in different subfolders, or with different extensions) is an
+ * error listing them, to be told apart with "Folder/Name" ("./Name" for the one directly in the
+ * plug-in's folder). `cid`: files that name another class are skipped. `exts`: only these extensions.
  * -> { file, ext } or null.
  */
 export function findPresetFile({ folder, preset, cid = null, exts = null, roots = presetFileRoots() }) {
   if (!folder || !preset) return null;
-  const parts = String(preset).split(/[\\/]/).filter(Boolean);
+  const raw = String(preset).replace(/\\/g, '/');
+  const top = /^\.?\//.test(raw);
+  const parts = raw.split('/').filter((x) => x && x !== '.');
   const stem = lc(parts.pop() || '');
   const sub = parts.map(lc);
-  const hits = [];
-  let order = 0;
   for (const root of roots) {
     const allowed = (root.exts || S1_EXTS).filter((e) => !exts || exts.includes(e));
+    const hits = [];
     for (const dir of pluginDirs(root.dir, folder)) {
       for (const file of filesIn(dir)) {
         const ext = lc(path.extname(file));
         if (!allowed.includes(ext) || lc(path.basename(file, path.extname(file))) !== stem) continue;
-        const rel = path.relative(dir, path.dirname(file)).split(path.sep).filter(Boolean).map(lc);
-        const inSub = sub.length > 0 && rel.slice(-sub.length).join('/') === sub.join('/');
         if (cid) {
           const got = presetFileClassId(file);
           if (got && lc(got) !== lc(cid)) continue;
         }
-        hits.push({ file, ext, inSub, order: order++ });
+        const rel = path.relative(dir, path.dirname(file)).split(path.sep).filter(Boolean).map(lc);
+        const inSub = top ? rel.length === 0 : sub.length > 0 && rel.slice(-sub.length).join('/') === sub.join('/');
+        hits.push({ file, ext, inSub, folderRel: path.relative(dir, path.dirname(file)).split(path.sep).join('/') });
       }
     }
+    if (!hits.length) continue;
+    // A folder prefix narrows the choice when it matches the files' folders; otherwise the name decides.
+    const pool = hits.some((h) => h.inSub) ? hits.filter((h) => h.inSub) : hits;
+    if (pool.length > 1) {
+      const list = pool.map((h) => path.relative(root.dir, h.file).split(path.sep).join('/'));
+      const name = parts.length || top ? raw.split('/').pop() : String(preset);
+      const how = pool.map((h) => `"${h.folderRel ? h.folderRel : '.'}/${name}"`);
+      throw new Error(`preset "${preset}" matches ${pool.length} files in ${root.dir}: ${list.join(', ')}; pass preset as Folder/Name to pick one (${[...new Set(how)].join(' or ')})`);
+    }
+    return { file: pool[0].file, ext: pool[0].ext };
   }
-  // A folder prefix narrows the choice when it matches the files' folders; otherwise the name decides.
-  const pool = hits.some((h) => h.inSub) ? hits.filter((h) => h.inSub) : hits;
-  if (!pool.length) return null;
-  pool.sort((a, b) => (EXT_RANK[a.ext] - EXT_RANK[b.ext]) || (a.order - b.order));
-  return { file: pool[0].file, ext: pool[0].ext };
+  return null;
 }

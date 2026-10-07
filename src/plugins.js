@@ -80,7 +80,13 @@ export function readPreset(path) {
 
 function* presetFiles(dir, depth = 0) {
   if (depth > 4 || !existsSync(dir)) return;
-  for (const e of readdirSync(dir).sort()) {
+  let entries;
+  try {
+    entries = readdirSync(dir).sort();
+  } catch {
+    return; // not a folder
+  }
+  for (const e of entries) {
     const p = join(dir, e);
     let st;
     try {
@@ -120,6 +126,7 @@ export function remoteMap(file) {
 // Presets are read from folders named after the plug-in (<root>/<vendor>/<name>),
 // at most `maxPresets` of them.
 export function pluginParamNames(pluginName, opts = {}) {
+  if (pluginName == null || pluginName === '') return { names: [], sources: [], plugin: pluginName ?? null };
   const found = namesOf(pluginName, opts);
   // A second instance is named "Pro EQ 2" (Studio One numbers them; a preset load or a state write
   // makes a new instance), and nothing is filed under that name: fall back to the plug-in's name.
@@ -162,6 +169,7 @@ function namesOf(pluginName, { roots = presetRoots(), maps = remoteMapFiles(), m
 // A plug-in's class from its own presets (<root>/<vendor>/<name>/**): { classId, className } or null.
 // Studio One's plug-in cache leaves out its built-in instruments (Mai Tai, Impact…); their presets name them.
 export function presetClass(pluginName, { roots = presetRoots() } = {}) {
+  if (pluginName == null || pluginName === '') return null;
   const names = [String(pluginName)];
   const base = names[0].replace(/\s+\d+$/, '');
   if (base !== names[0]) names.push(base);
@@ -174,6 +182,29 @@ export function presetClass(pluginName, { roots = presetRoots() } = {}) {
           if (++tried > 4) break;
           const preset = readPreset(p);
           if (preset?.classId && (!preset.className || preset.className === name)) return { classId: preset.classId, className: preset.className || name };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// The plug-in whose presets name class `classId` (first preset of each <root>/<vendor>/<plug-in> folder):
+// { classId, className } or null. For an instrument renamed in Studio One, whose title no longer names it.
+export function presetClassById(classId, { roots = presetRoots() } = {}) {
+  const want = String(classId ?? '').toLowerCase();
+  if (!want) return null;
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const vendor of readdirSync(root)) {
+      let plugins = [];
+      try { plugins = readdirSync(join(root, vendor)); } catch { continue; }
+      for (const name of plugins) {
+        let tried = 0;
+        for (const p of presetFiles(join(root, vendor, name))) {
+          if (++tried > 2) break;
+          const preset = readPreset(p);
+          if (preset?.classId?.toLowerCase() === want) return { classId: preset.classId, className: preset.className || name };
         }
       }
     }
