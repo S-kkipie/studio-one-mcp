@@ -74,7 +74,9 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
         pressed = { ok: false, reason: e.message || String(e) };
       }
       // Enter may have been pressed before an alert showed up: the group can exist even then.
-      if (!pressed.ok && pressed.reason === 'alert' && (await groupsOf(call)).groups.some((g) => tracks.every((n) => g.tracks.includes(n)))) pressed = { ok: true };
+      if (!pressed.ok && pressed.reason === 'alert') {
+        try { if ((await groupsOf(call)).groups.some((g) => tracks.every((n) => g.tracks.includes(n)))) pressed = { ok: true }; } catch { /* bridge busy: the failure path below */ }
+      }
       if (!pressed.ok) {
         // The command is in the mailbox: a dialog that opens late gets Escape (never Enter) while the
         // command is pending, up to lateCancelMs; then the command is abandoned.
