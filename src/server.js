@@ -18,6 +18,8 @@ import { arranger, listMacros, runMacro } from './arranger.js';
 import { tempo } from './tempo.js';
 import { trackEdit, addBus, trackTask, addInstrumentTrack, addFxSend } from './tracks.js';
 import { liveEvents } from './events.js';
+import { listGroups, createGroup, dissolveGroup } from './groups.js';
+import { importAudio, processAudio, AUDIO_ACTIONS } from './audio.js';
 import { listChords, setChords, extractChords, partsFromChords, clearChords } from './harmony.js';
 import { timeSignature } from './signatures.js';
 import { writeAutomation } from './automation.js';
@@ -869,6 +871,17 @@ server.tool(
 );
 
 server.tool(
+  'live_groups',
+  'Edit groups in the running Studio One (tracks that edit together). list: each group with its tracks. create {tracks: two or more exact track names, none already grouped}: groups them through Studio One\'s Group Selected Tracks; its name dialog flashes briefly and is confirmed (Windows only), so Studio One names the group itself (the tracks\' common name, else Group 1, 2\u2026) and the result gives that name. dissolve {group}: removes the group (the tracks stay). The track selection is restored.',
+  {
+    action: z.enum(['list', 'create', 'dissolve']),
+    tracks: z.array(z.string()).optional().describe('create: exact track names (two or more)'),
+    group: z.string().optional().describe('dissolve: group name from list'),
+  },
+  guard((a) => (a.action === 'create' ? createGroup(call, a) : a.action === 'dissolve' ? dissolveGroup(call, a) : listGroups(call))),
+);
+
+server.tool(
   'live_track_edit',
   'Edit a track by exact name in the running Studio One: rename (and its mixer channel), color ("#rrggbb"), remove, move (reorder: put it just before or after another track; both at the top level, not inside a folder), route (send its channel\'s output to a bus or output, by channel name), folder (move it into a folder track, creating it with create: true; the folder is expanded so the track stays visible to these tools), or renameEvents (name every event on it, numbered in time order if asked). Rename and colour are not on the undo stack; route is set back by routing to the "before" channel the result gives; remove, move, folder and renameEvents undo with live_undo. The track selection is kept. Move, route, folder and renameEvents run through the MCP Track Edit task installed with the device.',
   {
@@ -948,6 +961,31 @@ server.tool(
     times: z.number().int().optional(),
   },
   guard((a) => liveEvents(call, a)),
+);
+
+server.tool(
+  'live_import_audio',
+  'Import an audio file (absolute path: wav, aif, mp3, flac, ogg… whatever Studio One opens) into the running song at a position (seconds or bars, default the start), onto an existing audio track or a new one. No dialog. Studio One copies the file into the song\'s Media folder, names a new track after the file, and renames an empty audio track after it. With the song set to stretch audio files to the song tempo, Studio One may stretch the clip: for WAV files the result compares the file\'s own length (fileSeconds) with the placed clip (stretched). One live_undo removes the clip (seen live); the copy in the Media folder stays.',
+  {
+    file: z.string().describe('Absolute path of the audio file'),
+    track: z.string().optional().describe('Existing audio track (exact name); omit for a new track'),
+    at: TIME.optional().describe('Where the clip starts (default 0)'),
+  },
+  guard((a) => importAudio(call, a)),
+);
+
+server.tool(
+  'live_audio_process',
+  'Run one of Studio One\'s audio commands on one audio event (number from live_events list, or name) or on every event of an audio track in the running Studio One, with no dialog: detect_transients (bend markers), quantize / quantize_50 (Audio Bend quantize to the grid), apply_bend, remove_bend_markers, normalize, reverse (renders a new file into the song\'s Bounces folder), merge (into an audio part), event_fx (insert an Event FX plug-in by name, with an optional preset path and tail in seconds), render_event_fx. The selection is restored. Returns the track\'s events afterwards. live_undo reverts it (check with live_events); files it renders stay in the song folder.',
+  {
+    track: z.string(),
+    action: z.enum(AUDIO_ACTIONS),
+    event: z.union([z.number().int(), z.string()]).optional().describe('Event number (from live_events list) or name; omit for every event on the track'),
+    plugin: z.string().optional().describe('event_fx: effect name from live_plugins, e.g. "Pro EQ"'),
+    preset: z.string().optional().describe('event_fx: preset path relative to the plug-in, e.g. "Send FX/Catacombs"'),
+    tail: z.number().optional().describe('event_fx: tail in seconds, 0 to 30 (default 2)'),
+  },
+  guard((a) => processAudio(call, a)),
 );
 
 server.tool(
