@@ -32,6 +32,8 @@ const deps = (over = {}) => ({
   studioOnePid: async () => 42,
   windowsSnapshot: async () => ['A1'],
   driveExportDialog: async (o) => ({ ok: true, dialog: { title: 'Añadir Grupo' }, seen: o }),
+  cancelExportDialogs: async () => ({ cancelled: [] }),
+  lateCancelMs: 50,
   ...over,
 });
 
@@ -78,4 +80,19 @@ test('dissolveGroup selects the group\'s tracks, dissolves, verifies; unknown na
   await assert.rejects(dissolveGroup(bridge({ groups: { Kick: 'Drums' } }).call, { group: 'Vox' }), /no group named Vox; groups: Drums/);
   await assert.rejects(dissolveGroup(bridge({ groups: { Kick: 'Drums' }, dissolveWorks: false }).call, { group: 'Drums' }), /still there/);
   await assert.rejects(dissolveGroup(bridge().call, {}), /needs group/);
+});
+
+test('createGroup: after a failed dialog wait, a late dialog gets the Escape watch before the command is abandoned', async () => {
+  const b = bridge();
+  let watched = null;
+  await assert.rejects(
+    createGroup(b.call, { tracks: ['Kick', 'Snare'] }, deps({
+      driveExportDialog: async () => ({ ok: false, reason: 'no dialog' }),
+      cancelExportDialogs: async (o) => { watched = o; return { cancelled: ['Añadir Grupo'] }; },
+    })),
+    /did not come up \(no dialog\); a late dialog was cancelled/,
+  );
+  assert.equal(watched.pid, 42);
+  assert.deepEqual(watched.before, ['A1']);
+  assert.equal(watched.timeoutMs, 50);
 });

@@ -9,7 +9,7 @@
 //  - Track/Dissolve Group with the group's tracks selected removes it, with no dialog.
 import { trackTask } from './tracks.js';
 import { withDialogLock } from './dialoglock.js';
-import { windowsSnapshot, driveExportDialog } from './export/dialog.js';
+import { windowsSnapshot, driveExportDialog, cancelExportDialogs } from './export/dialog.js';
 import { findPid } from './export/export.js';
 
 async function groupsOf(call) {
@@ -38,7 +38,7 @@ export async function listGroups(call) {
 }
 
 export async function createGroup(call, { tracks } = {}, deps = {}) {
-  const d = { lock: withDialogLock, studioOnePid: findPid, windowsSnapshot, driveExportDialog, ...deps };
+  const d = { lock: withDialogLock, studioOnePid: findPid, windowsSnapshot, driveExportDialog, cancelExportDialogs, lateCancelMs: 10000, ...deps };
   if (!Array.isArray(tracks) || tracks.length < 2) throw new Error('create needs two or more tracks');
   if (new Set(tracks).size !== tracks.length) throw new Error('tracks has duplicates');
   const before = await groupsOf(call);
@@ -72,8 +72,17 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
         pressed = { ok: false, reason: e.message || String(e) };
       }
       if (!pressed.ok) {
+        // The command is in the mailbox: a dialog that opens late gets Escape (never Enter) while the
+        // command is pending, up to lateCancelMs; then the command is abandoned.
+        const stop = new AbortController();
+        const watch = d.cancelExportDialogs({ pid, before: winBefore, timeoutMs: d.lateCancelMs, signal: stop.signal }).catch(() => ({ cancelled: [] }));
+        let timer;
+        await Promise.race([settled, new Promise((r) => { timer = setTimeout(r, d.lateCancelMs); })]);
+        clearTimeout(timer);
+        stop.abort();
         abandon.abort();
-        throw new Error(`the group name dialog did not come up (${pressed.reason})`);
+        const { cancelled = [] } = await watch;
+        throw new Error(`the group name dialog did not come up (${pressed.reason})${cancelled.length ? '; a late dialog was cancelled' : ''}`);
       }
       const c = await settled;
       if (c.error && !/did not answer/.test(String(c.error.message))) throw c.error;
@@ -86,7 +95,7 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
     return {
       group: made.name,
       tracks: made.tracks,
-      note: 'Studio One names the group itself (from the tracks\' common name); scripts cannot set the name. live_groups dissolve removes it.',
+      note: 'Studio One names the group itself (the tracks\' common name, else Grupo 1 / Group 1\u2026); scripts cannot set the name. live_groups dissolve removes it.',
     };
   });
 }

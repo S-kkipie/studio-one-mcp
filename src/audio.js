@@ -40,7 +40,8 @@ export function wavSeconds(buf) {
     const id = buf.toString('ascii', pos, pos + 4);
     const size = buf.readUInt32LE(pos + 4);
     if (id === 'fmt ' && pos + 20 <= buf.length) byteRate = buf.readUInt32LE(pos + 16);
-    if (id === 'data') return byteRate ? size / byteRate : null;
+    // 0 and 0xFFFFFFFF are what streaming writers leave when the length was unknown.
+    if (id === 'data') return byteRate && size > 0 && size < 0xFFFFFFFF ? size / byteRate : null;
     pos += 8 + size + (size % 2);
   }
   return null;

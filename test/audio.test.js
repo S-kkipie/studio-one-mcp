@@ -176,3 +176,11 @@ test('processAudio: executed false and a bad event are errors, and the selection
   await assert.rejects(processAudio(c.call, { track: 'Drums', action: 'normalize', event: 5 }), /event 5 does not exist/);
   assert.ok(c.log.includes('deselect') && c.log.includes('selectTrack Vox true'));
 });
+
+test('wavSeconds: a streamed WAV (data size 0 or 0xFFFFFFFF) has no known length', () => {
+  for (const size of [0, 0xFFFFFFFF]) {
+    const b = wav({ seconds: 1 });
+    b.writeUInt32LE(size, b.length - 4);
+    assert.equal(wavSeconds(b), null);
+  }
+});

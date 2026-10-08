@@ -659,7 +659,7 @@ mtoOps.slotCommand = function (context, op) {
 mtoOps.importAudio = function (context, op) {
 	var file = typeof op.file === "string" ? op.file : "";
 	if (!/^[A-Za-z]:\//.test(file) && file.charAt(0) !== "/") return { error: "file must be an absolute path" };
-	if (typeof op.at !== "number" || !(op.at >= 0)) return { error: "at must be seconds >= 0" };
+	if (typeof op.at !== "number" || !(op.at >= 0) || !isFinite(op.at)) return { error: "at must be seconds >= 0" };
 	var url = Host.Url("file:///" + file.replace(/^\/+/, ""));
 	var io = Host.IO && mtoFn(Host.IO, "File") ? Host.IO.File(url) : null;
 	if (!io || !mtoFn(io, "exists") || !io.exists()) return { error: "no such file: " + file };
