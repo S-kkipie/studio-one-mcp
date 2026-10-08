@@ -147,7 +147,7 @@ test('processAudio: one event, and every action maps to a command', async () => 
   const b = procBridge();
   await processAudio(b.call, { track: 'Drums', action: 'reverse', event: 2 });
   assert.deepEqual(b.log.slice(0, 2), ['task selectEvent 2', 'command Audio/Reverse Audio']);
-  assert.deepEqual(AUDIO_ACTIONS, ['detect_transients', 'quantize', 'quantize_50', 'apply_bend', 'remove_bend_markers', 'normalize', 'reverse', 'merge', 'melodyne', 'event_fx', 'render_event_fx']);
+  assert.deepEqual(AUDIO_ACTIONS, ['detect_transients', 'quantize', 'quantize_50', 'apply_bend', 'remove_bend_markers', 'normalize', 'reverse', 'merge', 'event_fx', 'render_event_fx']);
 });
 
 test('processAudio event_fx: class ID by name, Insert Event FX args; plugin required; tail range', async () => {
@@ -183,4 +183,13 @@ test('wavSeconds: a streamed WAV (data size 0 or 0xFFFFFFFF) has no known length
     b.writeUInt32LE(size, b.length - 4);
     assert.equal(wavSeconds(b), null);
   }
+});
+
+test('processAudio: a digit string is an event number, and the command gets a long answer time', async () => {
+  const log = [];
+  const b = procBridge();
+  const call = async (op, a, opts) => { if (op === 'command') log.push(opts); return b.call(op, a, opts); };
+  await processAudio(call, { track: 'Drums', action: 'normalize', event: '2' });
+  assert.ok(b.log.includes('task selectEvent 2'));
+  assert.equal(log[0].timeoutMs, 120000);
 });

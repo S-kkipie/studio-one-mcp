@@ -96,3 +96,9 @@ test('createGroup: after a failed dialog wait, a late dialog gets the Escape wat
   assert.deepEqual(watched.before, ['A1']);
   assert.equal(watched.timeoutMs, 50);
 });
+
+test('createGroup: Enter pressed, then an alert: the group that exists is still reported', async () => {
+  const b = bridge();
+  const r = await createGroup(b.call, { tracks: ['Kick', 'Snare'] }, deps({ driveExportDialog: async () => { await new Promise((r) => setTimeout(r, 20)); return { ok: false, reason: 'alert', title: 'Studio One' }; } }));
+  assert.equal(r.group, 'beat');
+});

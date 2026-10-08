@@ -1,5 +1,5 @@
 // Audio in the running song: import a file by path, and run Studio One's audio commands
-// (transients, Audio Bend quantize, normalize, reverse, merge, Event FX, Melodyne) on one event or
+// (transients, Audio Bend quantize, normalize, reverse, merge, Event FX) on one event or
 // on every event of an audio track.
 //
 // Seen on 7.2.3 (2026-10-07):
@@ -25,7 +25,6 @@ const ACTIONS = {
   normalize: 'Audio/Normalize Audio',
   reverse: 'Audio/Reverse Audio',
   merge: 'Audio/Merge to Audio Part',
-  melodyne: 'Audio/Edit with Melodyne',
   event_fx: 'Audio/Insert Event FX',
   render_event_fx: 'Audio/Render Event FX',
 };
@@ -81,13 +80,18 @@ export async function importAudio(call, { file, track, at } = {}, deps = {}) {
   try { st = await fsx.stat(file); } catch { throw new Error(`no such file: ${file}`); }
   if (!st.isFile()) throw new Error(`not a file: ${file}`);
   await ensureStopped(call);
-  const seconds = (await toSeconds(call, at ?? 0)) ?? 0;
   const before = await call('tracks', { events: true, maxEvents: 500 });
   if (track !== undefined && oneTrack(before, track).mediaType !== 'Audio') throw new Error(`${track} is not an audio track`);
+  const seconds = (await toSeconds(call, at ?? 0)) ?? 0;
 
   const op = { op: 'importAudio', file: file.replace(/\\/g, '/'), at: seconds };
   if (track !== undefined) op.track = track;
-  await trackTask(call, op, { timeoutMs: 30000 });
+  try {
+    await trackTask(call, op, { timeoutMs: 30000 });
+  } catch (e) {
+    if (/did not answer/.test(String(e.message))) e.message += ' (it may still be importing: check live_tracks before trying again)';
+    throw e;
+  }
 
   const after = await call('tracks', { events: true, maxEvents: 500 });
   const key = (t, e) => `${t}|${e.name}|${e.start}`;
@@ -103,6 +107,7 @@ export async function importAudio(call, { file, track, at } = {}, deps = {}) {
   if (!hit) return { imported: true, file, note: 'imported, but the new clip could not be identified; check live_tracks' };
 
   const res = { track: hit.track, event: { name: hit.event.name, start: hit.event.start, end: hit.event.end, length: hit.event.length } };
+  if (after.filter((t) => t.name === hit.track).length > 1) res.warning = `more than one track is named ${hit.track}: rename one before addressing it by name`;
   if (track === undefined) res.newTrack = !before.some((t) => t.name === hit.track);
   else {
     res.newTrack = false;
@@ -125,7 +130,11 @@ export async function importAudio(call, { file, track, at } = {}, deps = {}) {
   return res;
 }
 
-export async function processAudio(call, { track, action, event, plugin, preset, tail } = {}) {
+// Rendering commands on long clips take a while; the bridge's default answer time is 5 s.
+const COMMAND_TIMEOUT_MS = 120000;
+
+export async function processAudio(call, { track, action, event: which, plugin, preset, tail } = {}) {
+  const event = typeof which === 'string' && /^\d+$/.test(which) ? Number(which) : which;
   const command = ACTIONS[action];
   if (!command) throw new Error(`action must be one of ${AUDIO_ACTIONS.join(', ')}`);
   if (action === 'event_fx' && !plugin) throw new Error('event_fx needs plugin (an effect name from live_plugins)');
@@ -143,7 +152,12 @@ export async function processAudio(call, { track, action, event, plugin, preset,
   try {
     if (event !== undefined) await trackTask(call, { op: 'selectEvent', track, event });
     else await call('selectEvents', { tracks: [track] });
-    r = await call('command', payload);
+    try {
+      r = await call('command', payload, { timeoutMs: COMMAND_TIMEOUT_MS });
+    } catch (e) {
+      if (/did not answer/.test(String(e.message))) e.message += ` (${command} may still be running: check live_events before trying again)`;
+      throw e;
+    }
   } finally {
     try { await call('selectEvents', { none: true }); } catch { /* best effort */ }
     for (const [i, name] of (song.selectedTracks || []).entries()) {

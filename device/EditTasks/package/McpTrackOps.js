@@ -675,7 +675,8 @@ mtoOps.importAudio = function (context, op) {
 	if (!mtoFn(af, "importFile")) return { error: "importFile is not available" };
 	var time = mtoTime(context, op.at);
 	if (!time) return { error: "could not make a time for " + op.at + " s" };
-	var r = af.importFile(url, time, track, 0);
+	var r = null;
+	try { r = af.importFile(url, time, track, 0); } catch (e) { return { error: "Studio One could not import " + file + ": " + e }; }
 	return { imported: true, result: typeof r === "number" ? r : null };
 };
 

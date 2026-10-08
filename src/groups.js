@@ -60,6 +60,8 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
       const sent = new Promise((r) => { markSent = r; });
       const settled = call('command', { category: 'Track', name: 'Group Selected Tracks' }, { timeoutMs: 20000, onSent: () => markSent(), signal: abandon.signal })
         .then((value) => ({ value }), (error) => ({ error }));
+      let settledYet = false;
+      void settled.then(() => { settledYet = true; });
       const first = await Promise.race([sent.then(() => 'sent'), settled.then(() => 'settled')]);
       if (first !== 'sent') {
         const r = await settled;
@@ -71,6 +73,8 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
       } catch (e) {
         pressed = { ok: false, reason: e.message || String(e) };
       }
+      // Enter may have been pressed before an alert showed up: the group can exist even then.
+      if (!pressed.ok && pressed.reason === 'alert' && (await groupsOf(call)).groups.some((g) => tracks.every((n) => g.tracks.includes(n)))) pressed = { ok: true };
       if (!pressed.ok) {
         // The command is in the mailbox: a dialog that opens late gets Escape (never Enter) while the
         // command is pending, up to lateCancelMs; then the command is abandoned.
@@ -82,7 +86,9 @@ export async function createGroup(call, { tracks } = {}, deps = {}) {
         stop.abort();
         abandon.abort();
         const { cancelled = [] } = await watch;
-        throw new Error(`the group name dialog did not come up (${pressed.reason})${cancelled.length ? '; a late dialog was cancelled' : ''}`);
+        const late = cancelled.length ? '; a late dialog was cancelled' : '';
+        const open = settledYet ? '' : '; a Studio One dialog may still be open: close it';
+        throw new Error(`the group name dialog did not come up (${pressed.reason})${late}${open}`);
       }
       const c = await settled;
       if (c.error && !/did not answer/.test(String(c.error.message))) throw c.error;

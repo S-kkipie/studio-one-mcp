@@ -976,7 +976,7 @@ server.tool(
 
 server.tool(
   'live_audio_process',
-  'Run one of Studio One\'s audio commands on one audio event (number from live_events list, or name) or on every event of an audio track in the running Studio One, with no dialog: detect_transients (bend markers), quantize / quantize_50 (Audio Bend quantize to the grid), apply_bend, remove_bend_markers, normalize, reverse (renders a new file into the song\'s Bounces folder), merge (into an audio part), melodyne (opens Melodyne on it), event_fx (insert an Event FX plug-in by name, with an optional preset path and tail in seconds), render_event_fx. The selection is restored. Returns the track\'s events afterwards. live_undo reverts it (check with live_events); files it renders stay in the song folder.',
+  'Run one of Studio One\'s audio commands on one audio event (number from live_events list, or name) or on every event of an audio track in the running Studio One, with no dialog: detect_transients (bend markers), quantize / quantize_50 (Audio Bend quantize to the grid), apply_bend, remove_bend_markers, normalize, reverse (renders a new file into the song\'s Bounces folder), merge (into an audio part), event_fx (insert an Event FX plug-in by name, with an optional preset path and tail in seconds), render_event_fx. The selection is restored. Returns the track\'s events afterwards. live_undo reverts it (check with live_events); files it renders stay in the song folder.',
   {
     track: z.string(),
     action: z.enum(AUDIO_ACTIONS),
