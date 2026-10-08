@@ -28,6 +28,7 @@ function load(extraHost = {}) {
   ctx.include_file = (f) => { if (f !== 'McpEditConfig.js') vm.runInContext(pkg(f), ctx); };
   vm.runInContext(source, ctx);
   return {
+    files,
     task: vm.runInContext('createMcpTrackEdit()', ctx),
     request: (ops) => files.set(MAILBOX + 'track-edit-request.json', JSON.stringify({ id: 't1', ops }) + '\n'),
     result: () => JSON.parse(files.get(MAILBOX + 'track-edit-result.json')),
@@ -471,4 +472,79 @@ test('markers and signatures find the marker track under a localized name', () =
   const [m, sg] = t.result().results;
   assert.deepEqual(m.markers.map((x) => x.name), ['Start', 'Hook', 'End']);
   assert.deepEqual(sg.signatures.map((x) => `${x.numerator}/${x.denominator}`), ['4/4', '3/4']);
+});
+
+// ---- audio import, edit groups, plug-in class ----
+function importSong() {
+  const s = song();
+  const calls = [];
+  s.context.functions.root.createFunctions = (n) => (n === 'AudioFunctions'
+    ? { importFile: (url, time, track, flags) => { calls.push([url.url, time.seconds, track ? track.name : null, flags]); return 1; } }
+    : null);
+  return { s, calls };
+}
+
+test('importAudio imports at a MediaTime onto the named audio track, or a new track', () => {
+  const t = load();
+  t.files.set('file:///C:/a/beat.wav', 'RIFF');
+  const { s, calls } = importSong();
+  t.request([{ op: 'importAudio', file: 'C:/a/beat.wav', at: 4, track: 'Vox' }, { op: 'importAudio', file: 'C:/a/beat.wav', at: 0 }]);
+  t.task.performEdit(s.context);
+  const { results } = t.result();
+  assert.deepEqual(results.map((r) => r.imported), [true, true]);
+  assert.deepEqual(calls, [['file:///C:/a/beat.wav', 4, 'Vox', 0], ['file:///C:/a/beat.wav', 0, null, 0]]);
+});
+
+test('importAudio checks everything before calling importFile', () => {
+  const t = load();
+  t.files.set('file:///C:/a/beat.wav', 'RIFF');
+  const { s, calls } = importSong();
+  t.request([
+    { op: 'importAudio', file: 'beat.wav', at: 0 },
+    { op: 'importAudio', file: 'C:/a/none.wav', at: 0 },
+    { op: 'importAudio', file: 'C:/a/beat.wav', at: -1 },
+    { op: 'importAudio', file: 'C:/a/beat.wav', at: 0, track: 'Marker Track' },
+    { op: 'importAudio', file: 'C:/a/beat.wav', at: 0, track: 'Nope' },
+  ]);
+  t.task.performEdit(s.context);
+  const r = t.result().results;
+  assert.match(r[0].error, /absolute path/);
+  assert.match(r[1].error, /no such file/);
+  assert.match(r[2].error, /at must be/);
+  assert.match(r[3].error, /not an audio track/);
+  assert.match(r[4].error, /no track named Nope/);
+  assert.equal(calls.length, 0);
+});
+
+test('importAudio without AudioFunctions.importFile is an error', () => {
+  const t = load();
+  t.files.set('file:///C:/a/beat.wav', 'RIFF');
+  const s = song();
+  t.request([{ op: 'importAudio', file: 'C:/a/beat.wav', at: 0 }]);
+  t.task.performEdit(s.context);
+  assert.match(t.result().results[0].error, /importFile is not available/);
+});
+
+test('editGroups reads each track channel\'s edit group (null when none); global tracks are skipped', () => {
+  const t = load();
+  const s = song();
+  s.tracks.find((x) => x.name === 'Vox').channel = { editGroup: 'Drums' };
+  s.tracks.find((x) => x.name === 'Gtr').channel = {};
+  t.request([{ op: 'editGroups' }]);
+  t.task.performEdit(s.context);
+  assert.deepEqual(t.result().results[0].tracks, [{ name: 'Vox', group: 'Drums' }, { name: 'Gtr', group: null }]);
+});
+
+test('pluginClass finds an effect by name, case-insensitively', () => {
+  const names = ['Pro EQ', 'Compressor'];
+  const cids = ['{EQ}', '{COMP}'];
+  const menu = { min: 0, max: 1, i: 0, setCategory() {}, setValue(i) { this.i = i; }, get string() { return names[this.i]; }, getSelectedClass() { return cids[this.i]; } };
+  const t = load({ Classes: { createInstance: (n) => (n === 'Host:PlugInMenuParam' ? menu : null) } });
+  const s = song();
+  t.request([{ op: 'pluginClass', plugin: 'compressor' }, { op: 'pluginClass', plugin: 'Nope' }]);
+  t.task.performEdit(s.context);
+  const [a, b] = t.result().results;
+  assert.equal(a.cls, '{COMP}');
+  assert.equal(a.name, 'Compressor');
+  assert.match(b.error, /no plug-in named Nope/);
 });

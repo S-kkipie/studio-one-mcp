@@ -643,3 +643,54 @@ mtoOps.slotCommand = function (context, op) {
 	if (op.name) res.name = String(op.name);
 	return res;
 };
+
+// ---- audio import, edit groups, plug-in class ----------------------------------
+//
+// Seen on 7.2.3 (2026-10-07):
+//  - AudioFunctions.importFile(url, time: MediaTime, targetTrack = null, flags = 0) imports
+//    with no dialog. The file is copied into the song's Media folder; with no track a new audio
+//    track named after the file is made, and an empty audio track is renamed after the file.
+//    Calling it with a track as the second argument left Studio One stuck in a drop state
+//    (bridge dead, audio glitching), so every argument is checked before the call.
+//  - channel.editGroup is the name of the track's edit group (undefined when none); assigning
+//    to it does nothing.
+
+// { file: absolute path with forward slashes, at: seconds, track? }
+mtoOps.importAudio = function (context, op) {
+	var file = typeof op.file === "string" ? op.file : "";
+	if (!/^[A-Za-z]:\//.test(file) && file.charAt(0) !== "/") return { error: "file must be an absolute path" };
+	if (typeof op.at !== "number" || !(op.at >= 0)) return { error: "at must be seconds >= 0" };
+	var url = Host.Url("file:///" + file.replace(/^\/+/, ""));
+	var io = Host.IO && mtoFn(Host.IO, "File") ? Host.IO.File(url) : null;
+	if (!io || !mtoFn(io, "exists") || !io.exists()) return { error: "no such file: " + file };
+	var track = null;
+	if (op.track !== undefined && op.track !== null) {
+		var t = mtoTrack(context, op.track);
+		if (t.error) return t;
+		if (t.track.mediaType !== "Audio") return { error: op.track + " is not an audio track" };
+		track = t.track;
+	}
+	var root = context.functions ? context.functions.root : null;
+	var af = mtoFn(root, "createFunctions") ? root.createFunctions("AudioFunctions") : null;
+	if (!mtoFn(af, "importFile")) return { error: "importFile is not available" };
+	var time = mtoTime(context, op.at);
+	if (!time) return { error: "could not make a time for " + op.at + " s" };
+	var r = af.importFile(url, time, track, 0);
+	return { imported: true, result: typeof r === "number" ? r : null };
+};
+
+// {}: every media track with its edit group name, or null.
+mtoOps.editGroups = function (context) {
+	var all = mtoAllTracks(context), out = [];
+	for (var i = 0; i < all.length; i++) {
+		var t = all[i];
+		if (!t || !t.mediaType) continue;
+		var ch = t.channel;
+		var g = ch && typeof ch.editGroup === "string" && ch.editGroup ? ch.editGroup : null;
+		out.push({ name: t.name, group: g });
+	}
+	return { tracks: out };
+};
+
+// { plugin }: an effect's class ID by name, as live_plugins lists it.
+mtoOps.pluginClass = function (context, op) { return mtoPluginClass(op.plugin, "AudioEffect"); };
