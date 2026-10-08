@@ -18,6 +18,7 @@ import { arranger, listMacros, runMacro } from './arranger.js';
 import { tempo } from './tempo.js';
 import { trackEdit, addBus, trackTask, addInstrumentTrack, addFxSend } from './tracks.js';
 import { liveEvents } from './events.js';
+import { importAudio, processAudio, AUDIO_ACTIONS } from './audio.js';
 import { listChords, setChords, extractChords, partsFromChords, clearChords } from './harmony.js';
 import { timeSignature } from './signatures.js';
 import { writeAutomation } from './automation.js';
@@ -948,6 +949,31 @@ server.tool(
     times: z.number().int().optional(),
   },
   guard((a) => liveEvents(call, a)),
+);
+
+server.tool(
+  'live_import_audio',
+  'Import an audio file (absolute path: wav, aif, mp3, flac, ogg… whatever Studio One opens) into the running song at a position (seconds or bars, default the start), onto an existing audio track or a new one. No dialog. Studio One copies the file into the song\'s Media folder, names a new track after the file, and renames an empty audio track after it. With the song set to stretch audio files to the song tempo, Studio One may stretch the clip: for WAV files the result compares the file\'s own length (fileSeconds) with the placed clip (stretched). Check with live_events; live_undo reverts it.',
+  {
+    file: z.string().describe('Absolute path of the audio file'),
+    track: z.string().optional().describe('Existing audio track (exact name); omit for a new track'),
+    at: TIME.optional().describe('Where the clip starts (default 0)'),
+  },
+  guard((a) => importAudio(call, a)),
+);
+
+server.tool(
+  'live_audio_process',
+  'Run one of Studio One\'s audio commands on one audio event (number from live_events list, or name) or on every event of an audio track in the running Studio One, with no dialog: detect_transients (bend markers), quantize / quantize_50 (Audio Bend quantize to the grid), apply_bend, remove_bend_markers, normalize, reverse (renders a new file into the song\'s Bounces folder), merge (into an audio part), melodyne (opens Melodyne on it), event_fx (insert an Event FX plug-in by name, with an optional preset path and tail in seconds), render_event_fx. The selection is restored. Returns the track\'s events afterwards. Use live_undo to revert.',
+  {
+    track: z.string(),
+    action: z.enum(AUDIO_ACTIONS),
+    event: z.union([z.number().int(), z.string()]).optional().describe('Event number (from live_events list) or name; omit for every event on the track'),
+    plugin: z.string().optional().describe('event_fx: effect name from live_plugins, e.g. "Pro EQ"'),
+    preset: z.string().optional().describe('event_fx: preset path relative to the plug-in, e.g. "Send FX/Catacombs"'),
+    tail: z.number().optional().describe('event_fx: tail in seconds, 0 to 30 (default 2)'),
+  },
+  guard((a) => processAudio(call, a)),
 );
 
 server.tool(
