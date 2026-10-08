@@ -15,6 +15,8 @@ Status: early. Upstream was developed against **Studio One 5.5.2 on macOS** and 
 
 An independent project, not affiliated with or endorsed by PreSonus or Fender. Studio One is their trademark.
 
+**Claude Code skill:** [`skills/studio-one/SKILL.md`](skills/studio-one/SKILL.md) teaches an agent how to use these tools and the CLI: which tool for each job, argument conventions, what needs confirmation, and troubleshooting. Copy the folder to `~/.claude/skills/studio-one/` to install it.
+
 ## Tools
 
 | Tool | What it does |
