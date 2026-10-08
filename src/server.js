@@ -18,6 +18,7 @@ import { arranger, listMacros, runMacro } from './arranger.js';
 import { tempo } from './tempo.js';
 import { trackEdit, addBus, trackTask, addInstrumentTrack, addFxSend } from './tracks.js';
 import { liveEvents } from './events.js';
+import { listGroups, createGroup, dissolveGroup } from './groups.js';
 import { importAudio, processAudio, AUDIO_ACTIONS } from './audio.js';
 import { listChords, setChords, extractChords, partsFromChords, clearChords } from './harmony.js';
 import { timeSignature } from './signatures.js';
@@ -867,6 +868,17 @@ server.tool(
   'Create a bus for some tracks (their outputs are routed into it) or a VCA that controls them, in the running Studio One. Returns the new channel and, for a bus, where each track now goes. One live_undo removes it. The track selection is kept.',
   { tracks: z.array(z.string()).describe('Exact track names'), kind: z.enum(['bus', 'vca']).optional() },
   guard((a) => addBus(call, a)),
+);
+
+server.tool(
+  'live_groups',
+  'Edit groups in the running Studio One (tracks that edit together). list: each group with its tracks. create {tracks: two or more exact track names, none already grouped}: groups them through Studio One\'s Group Selected Tracks; its name dialog flashes briefly and is confirmed (Windows only), so Studio One names the group itself (the tracks\' common name) and the result gives that name. dissolve {group}: removes the group (the tracks stay). The track selection is restored.',
+  {
+    action: z.enum(['list', 'create', 'dissolve']),
+    tracks: z.array(z.string()).optional().describe('create: exact track names (two or more)'),
+    group: z.string().optional().describe('dissolve: group name from list'),
+  },
+  guard((a) => (a.action === 'create' ? createGroup(call, a) : a.action === 'dissolve' ? dissolveGroup(call, a) : listGroups(call))),
 );
 
 server.tool(
