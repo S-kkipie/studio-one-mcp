@@ -16,7 +16,8 @@ export function studioOneProfiles() {
   const out = [];
   for (const r of roots) {
     if (!existsSync(r)) continue;
-    for (const d of readdirSync(r)) if (/^Studio (One|Pro)/.test(d)) out.push(join(r, d));
+    // Folders only: a Studio One crash leaves "Studio One_7_2_3_…dmp" files beside the profile.
+    for (const d of readdirSync(r, { withFileTypes: true })) if (d.isDirectory() && /^Studio (One|Pro) \d+$/.test(d.name)) out.push(join(r, d.name));
   }
   return out.sort().reverse(); // newest version first
 }
